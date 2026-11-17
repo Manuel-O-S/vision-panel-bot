@@ -1,0 +1,1 @@
+"""Acciones y macros ejecutables."""
