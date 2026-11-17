@@ -6,6 +6,8 @@ Una acción es un dict serializable (va tal cual en el .tarea):
     {"tipo": "click",   "zona": "Zona 1", "x": 0.5, "y": 0.5, "boton": "left", "jitter": 2}
     {"tipo": "click",   "zona": "Zona 2", "plantilla": "Plantilla B"}   # centro del match
     {"tipo": "click",   "x": 0.25, "y": 0.80}                           # relativo a la ventana
+    {"tipo": "mantener",  "zona": "Zona 1", "boton": "left", "min": 0.5, "max": 1.0}  # mantener pulsado
+    {"tipo": "autoclick", "zona": "Zona 1", "boton": "right", "cps": 10, "min": 2, "max": 3}
     {"tipo": "tecla",   "tecla": "space"}
     {"tipo": "texto",   "texto": "hola"}
     {"tipo": "esperar", "min": 0.2, "max": 0.6}                         # delay entrópico
@@ -22,12 +24,13 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from core.entropy import dormir_entropico
+from core.entropy import dormir_entropico, generar_delay_entropico
 from core.geometry import Rect, to_pixel
 from core.rules import ZoneObservation
 
@@ -37,6 +40,8 @@ __all__ = ["ActionContext", "ActionRunner", "ActionError", "DefaultActionRunner"
            "expand_actions", "MAX_ACTION_DEPTH"]
 
 MAX_ACTION_DEPTH = 8
+MAX_CPS = 30.0
+_BUTTONS = ("left", "right", "middle")
 
 
 class ActionError(RuntimeError):
@@ -118,6 +123,8 @@ class DefaultActionRunner:
         self.base_dir = Path(base_dir) if base_dir else Path.cwd()  # raíz de rutas relativas
         self._handlers: dict[str, Callable[[Mapping[str, Any], ActionContext], None]] = {
             "click": self._click,
+            "mantener": self._hold,
+            "autoclick": self._autoclick,
             "tecla": self._key,
             "texto": self._text,
             "esperar": self._wait,
@@ -142,12 +149,77 @@ class DefaultActionRunner:
         from core import input_sim
         return input_sim
 
+    @staticmethod
+    def _button(action: Mapping[str, Any]) -> str:
+        boton = str(action.get("boton", "left"))
+        if boton not in _BUTTONS:
+            raise ActionError(f"Botón inválido: {boton!r}")
+        return boton
+
+    @staticmethod
+    def _range(action: Mapping[str, Any], lo: float, hi: float) -> tuple[float, float]:
+        a, b = float(action.get("min", lo)), float(action.get("max", hi))
+        if not 0 <= a <= b:
+            raise ActionError(f"Rango de duración inválido: mín {a} / máx {b}")
+        return a, b
+
     def _click(self, action: Mapping[str, Any], ctx: ActionContext) -> None:
         x, y = resolve_point(action, ctx)
-        boton = str(action.get("boton", "left"))
-        if boton not in ("left", "right", "middle"):
-            raise ActionError(f"Botón inválido: {boton!r}")
+        boton = self._button(action)
         self._input().click(x, y, button=boton, jitter_px=float(action.get("jitter", 2.0)))
+
+    def _hold(self, action: Mapping[str, Any], ctx: ActionContext) -> None:
+        """Mantiene pulsado el botón un tiempo entrópico entre ``min`` y ``max`` segundos."""
+        x, y = resolve_point(action, ctx)
+        boton = self._button(action)
+        lo, hi = self._range(action, 0.5, 1.0)
+        entrada = self._input()
+        entrada.move(x, y, float(action.get("jitter", 2.0)))
+        entrada.human_delay()
+        entrada.button_down(boton)
+        try:
+            dormir_entropico(lo, hi, ctx.stop_event)  # el pánico lo corta al instante
+        finally:
+            entrada.button_up(boton)  # nunca dejar el botón pegado
+
+    def _autoclick(self, action: Mapping[str, Any], ctx: ActionContext) -> None:
+        """Ráfaga de clics a ~``cps`` por segundo durante ``min``-``max`` segundos.
+
+        Cada intervalo y cada pulsación son entrópicos (±30 % alrededor de 1/cps),
+        así que el ritmo medio es ``cps`` pero nunca hay dos clics iguales.
+        """
+        x, y = resolve_point(action, ctx)
+        boton = self._button(action)
+        cps = float(action.get("cps", 10))
+        if not 0 < cps <= MAX_CPS:
+            raise ActionError(f"'cps' debe estar entre 1 y {MAX_CPS:g}: {cps}")
+        lo, hi = self._range(action, 1.0, 2.0)
+        duracion = generar_delay_entropico(lo, hi)
+        base = 1.0 / cps
+        entrada = self._input()
+        entrada.move(x, y, float(action.get("jitter", 2.0)))
+        entrada.human_delay()
+
+        clics = 0
+        inicio = proximo = time.perf_counter()
+        fin = inicio + duracion
+        while not ctx.stop_event.is_set() and time.perf_counter() < fin:
+            intervalo = generar_delay_entropico(0.7 * base, 1.3 * base)
+            pulsado = generar_delay_entropico(min(0.012, 0.3 * intervalo), min(0.04, 0.5 * intervalo))
+            entrada.button_down(boton)
+            try:
+                time.sleep(pulsado)
+            finally:
+                entrada.button_up(boton)
+            clics += 1
+            proximo += intervalo
+            espera = proximo - time.perf_counter()
+            if espera > 0:
+                ctx.stop_event.wait(espera)
+            else:
+                proximo = time.perf_counter()  # si vamos tarde, no "recuperar" con ráfagas
+        real = time.perf_counter() - inicio
+        ctx.log(f"Autoclick {boton}: {clics} clics en {real:.2f} s (~{clics / real if real else 0:.1f} cps)")
 
     def _key(self, action: Mapping[str, Any], ctx: ActionContext) -> None:
         tecla = action.get("tecla")

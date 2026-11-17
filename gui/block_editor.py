@@ -326,8 +326,13 @@ class ConditionBuilder(ctk.CTkFrame):
 # =========================================================================== #
 # Editor de acciones
 # =========================================================================== #
+# Claves del menú (no siempre = "tipo": "mantener_der" es {"tipo": "mantener", "boton": "right"}).
 ACTION_LABELS = {
     "click": "Clic",
+    "mantener": "Mantener clic",
+    "mantener_der": "Mantener clic derecho",
+    "autoclick": "Autoclick",
+    "autoclick_der": "Autoclick derecho",
     "tecla": "Pulsar tecla",
     "texto": "Escribir texto",
     "esperar": "Esperar",
@@ -339,6 +344,14 @@ ACTION_LABELS = {
 _LABEL_TO_TYPE = {v: k for k, v in ACTION_LABELS.items()}
 ACTION_DEFAULTS: dict[str, dict[str, Any]] = {
     "click": {"tipo": "click", "zona": None, "plantilla": None, "x": 0.5, "y": 0.5, "boton": "left"},
+    "mantener": {"tipo": "mantener", "zona": None, "plantilla": None, "x": 0.5, "y": 0.5,
+                 "boton": "left", "min": 0.5, "max": 1.0},
+    "mantener_der": {"tipo": "mantener", "zona": None, "plantilla": None, "x": 0.5, "y": 0.5,
+                     "boton": "right", "min": 0.5, "max": 1.0},
+    "autoclick": {"tipo": "autoclick", "zona": None, "plantilla": None, "x": 0.5, "y": 0.5,
+                  "boton": "left", "cps": 10, "min": 1.0, "max": 2.0},
+    "autoclick_der": {"tipo": "autoclick", "zona": None, "plantilla": None, "x": 0.5, "y": 0.5,
+                      "boton": "right", "cps": 10, "min": 1.0, "max": 2.0},
     "tecla": {"tipo": "tecla", "tecla": "space"},
     "texto": {"tipo": "texto", "texto": ""},
     "esperar": {"tipo": "esperar", "min": 0.2, "max": 0.5},
@@ -348,6 +361,14 @@ ACTION_DEFAULTS: dict[str, dict[str, Any]] = {
     "exe": {"tipo": "exe", "ruta": ""},
 }
 NO_LIBRARY = "(biblioteca vacía)"
+
+
+def action_menu_key(a: dict[str, Any]) -> str:
+    """Acción -> clave de ACTION_LABELS (distingue las variantes de botón derecho)."""
+    t = str(a.get("tipo", ""))
+    if t in ("mantener", "autoclick") and a.get("boton") == "right":
+        return f"{t}_der"
+    return t if t in ACTION_LABELS else "click"
 
 
 def _first_line(code: str) -> str:
@@ -413,9 +434,9 @@ class ActionsEditor(ctk.CTkFrame):
         fila = ctk.CTkFrame(self.list, fg_color="#24402a", corner_radius=6)
         fila.pack(fill="x", pady=2)
         ctk.CTkLabel(fila, text=f"{i + 1}.", width=24).pack(side="left", padx=(6, 0), pady=4)
-        tipo = ctk.CTkOptionMenu(fila, values=list(ACTION_LABELS.values()), width=140,
+        tipo = ctk.CTkOptionMenu(fila, values=list(ACTION_LABELS.values()), width=160,
                                  command=lambda v: self._change_type(i, _LABEL_TO_TYPE[v]))
-        tipo.set(ACTION_LABELS.get(a.get("tipo", ""), "Clic"))
+        tipo.set(ACTION_LABELS[action_menu_key(a)])
         tipo.pack(side="left", padx=4)
 
         def setter(clave: str) -> Callable[[Any], None]:
@@ -425,20 +446,23 @@ class ActionsEditor(ctk.CTkFrame):
             return _s
 
         t = a.get("tipo")
-        if t == "click":
-            zonas = [WINDOW_LABEL] + self.zones
-            z = ctk.CTkOptionMenu(fila, values=zonas, width=130,
-                                  command=lambda v: setter("zona")(None if v == WINDOW_LABEL else v))
-            z.set(a.get("zona") or WINDOW_LABEL)
-            z.pack(side="left", padx=4)
-            plantillas = [NO_TEMPLATE] + self.templates
-            p = ctk.CTkOptionMenu(fila, values=plantillas, width=130,
-                                  command=lambda v: setter("plantilla")(None if v == NO_TEMPLATE else v))
-            p.set(a.get("plantilla") or NO_TEMPLATE)
-            p.pack(side="left", padx=4)
-            for clave in ("x", "y"):
-                ctk.CTkLabel(fila, text=clave).pack(side="left", padx=(4, 1))
-                _entry(fila, a.get(clave, 0.5), _float_in(0, 1), setter(clave), width=52).pack(side="left")
+        if t in ("mantener", "autoclick"):
+            self._point_fields(fila, a, setter)
+            # 2.ª línea: tiempos (la fila ya es ancha con zona/plantilla/x/y)
+            sub = ctk.CTkFrame(self.list, fg_color="#24402a", corner_radius=6)
+            sub.pack(fill="x", pady=(0, 2), padx=(30, 0))
+            ctk.CTkLabel(sub, text="Botón " + ("derecho" if a.get("boton") == "right" else "izquierdo"),
+                         text_color="gray70").pack(side="left", padx=(8, 12), pady=3)
+            if t == "autoclick":
+                ctk.CTkLabel(sub, text="clics/seg").pack(side="left", padx=(0, 2))
+                _entry(sub, a.get("cps", 10), _float_in(1, 30), setter("cps"), width=52).pack(side="left")
+            _range_fields(sub, "  durante (s)" if t == "autoclick" else "mantener (s)",
+                          (float(a.get("min", 0)), float(a.get("max", 0))),
+                          lambda r: (a.update(min=r[0], max=r[1]), self.on_change())).pack(side="left", padx=4)
+            ctk.CTkLabel(sub, text="tiempos aleatorios (entrópicos)",
+                         text_color="gray55").pack(side="left", padx=6)
+        elif t == "click":
+            self._point_fields(fila, a, setter)
             b = ctk.CTkOptionMenu(fila, values=["left", "right", "middle"], width=80,
                                   command=setter("boton"))
             b.set(a.get("boton", "left"))
@@ -485,6 +509,23 @@ class ActionsEditor(ctk.CTkFrame):
                            ("↑", lambda: self._move(i, -1))):
             ctk.CTkButton(fila, text=texto, width=28, fg_color="transparent",
                           command=cmd).pack(side="right", padx=1)
+
+    def _point_fields(self, fila: Any, a: dict[str, Any],
+                      setter: Callable[[str], Callable[[Any], None]]) -> None:
+        """Dónde actuar: [zona][plantilla] x [..] y [..] (común a clic, mantener y autoclick)."""
+        zonas = [WINDOW_LABEL] + self.zones
+        z = ctk.CTkOptionMenu(fila, values=zonas, width=130,
+                              command=lambda v: setter("zona")(None if v == WINDOW_LABEL else v))
+        z.set(a.get("zona") or WINDOW_LABEL)
+        z.pack(side="left", padx=4)
+        plantillas = [NO_TEMPLATE] + self.templates
+        p = ctk.CTkOptionMenu(fila, values=plantillas, width=130,
+                              command=lambda v: setter("plantilla")(None if v == NO_TEMPLATE else v))
+        p.set(a.get("plantilla") or NO_TEMPLATE)
+        p.pack(side="left", padx=4)
+        for clave in ("x", "y"):
+            ctk.CTkLabel(fila, text=clave).pack(side="left", padx=(4, 1))
+            _entry(fila, a.get(clave, 0.5), _float_in(0, 1), setter(clave), width=52).pack(side="left")
 
     def _pick_macro(self, entry: ctk.CTkEntry) -> None:
         carpeta = self.base_dir / "macros"

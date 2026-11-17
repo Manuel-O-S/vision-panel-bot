@@ -63,6 +63,15 @@ def mouse_up(x: int, y: int, button: str = "left") -> None:
     pydirectinput.mouseUp(x, y, button=button)
 
 
+def button_down(button: str = "left") -> None:
+    """Pulsa el botón en la posición actual (sin mover el ratón)."""
+    pydirectinput.mouseDown(button=button)
+
+
+def button_up(button: str = "left") -> None:
+    pydirectinput.mouseUp(button=button)
+
+
 def scroll(x: int, y: int, clicks: int) -> None:
     """Rueda del ratón (positivo = arriba). pydirectinput no lo implementa."""
     pydirectinput.moveTo(x, y)
