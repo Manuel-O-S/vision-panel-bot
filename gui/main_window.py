@@ -40,7 +40,8 @@ from core.rules import BASELINE, TemplateRef
 from core.vision import TemplateLibrary, WindowLocator, list_windows, primary_screen, read_image
 from gui.block_editor import ActionsEditor, FlowEditor
 from gui.snipping_tool import Snip, SnippingTool, bgr_to_photo
-from workflows.hotkeys import DEFAULT_PANIC, DEFAULT_TOGGLE, HotkeyManager, describe
+from workflows.hotkeys import (DEFAULT_PANIC, DEFAULT_SNIP_TEMPLATES, DEFAULT_SNIP_ZONES,
+                               DEFAULT_TOGGLE, HotkeyManager, describe)
 from workflows.task_manager import Task, TaskError, TaskManager, save_template_image
 
 log = logging.getLogger(__name__)
@@ -93,6 +94,8 @@ class MainWindow(ctk.CTk):
             on_toggle=lambda: self._ui_queue.put("toggle"),
             on_panic=self._panic_from_hotkey,
             esc_panic=self.task.settings.esc_panic,
+            extra={DEFAULT_SNIP_ZONES: lambda: self._ui_queue.put("snip_zones"),
+                   DEFAULT_SNIP_TEMPLATES: lambda: self._ui_queue.put("snip_templates")},
         )
         try:
             self.hotkeys.start()
@@ -137,7 +140,10 @@ class MainWindow(ctk.CTk):
         self.status.pack(side="bottom", pady=(4, 16))
         ctk.CTkLabel(bar, justify="left", text_color="gray55",
                      text=f"Play/Pausa: {describe(DEFAULT_TOGGLE)}\n"
-                          f"Pánico: {describe(DEFAULT_PANIC)} / Esc").pack(side="bottom", padx=10)
+                          f"Pánico: {describe(DEFAULT_PANIC)} / Esc\n"
+                          f"Recortar zonas: {describe(DEFAULT_SNIP_ZONES)}\n"
+                          f"Recortar plantilla: {describe(DEFAULT_SNIP_TEMPLATES)}"
+                     ).pack(side="bottom", padx=10)
 
     def _build_tabs(self) -> None:
         self.tabs = ctk.CTkTabview(self)
@@ -321,7 +327,9 @@ class MainWindow(ctk.CTk):
         self.fps_slider, self.fps_label = self._slider(r, 5, 60, 55, self._on_fps_change, fmt="{:.0f}")
 
         r = fila("Atajos globales",
-                 f"{describe(DEFAULT_TOGGLE)} → Play/Pausa    {describe(DEFAULT_PANIC)} → Pánico")
+                 f"{describe(DEFAULT_TOGGLE)} → Play/Pausa    {describe(DEFAULT_PANIC)} → Pánico\n"
+                 f"{describe(DEFAULT_SNIP_ZONES)} → Recortar zonas    "
+                 f"{describe(DEFAULT_SNIP_TEMPLATES)} → Recortar plantilla")
         self.esc_var = tk.BooleanVar(value=True)
         ctk.CTkSwitch(r, text="Esc también activa el pánico", variable=self.esc_var,
                       command=self._on_esc_change).pack(side="left")
@@ -465,6 +473,14 @@ class MainWindow(ctk.CTk):
                                    f"No encuentro la ventana {titulo!r} (¿cerrada o minimizada?).\n"
                                    "Ábrela o elige otra en Ajustes.", parent=self)
         return r
+
+    def _can_snip_from_hotkey(self) -> bool:
+        """Evita abrir dos recortes a la vez o recortar mientras se graba una macro."""
+        if self._recorder is not None or self.state() == "withdrawn":
+            return False  # 'withdrawn' = ya hay un recorte abriéndose o abierto
+        if any(isinstance(w, SnippingTool) for w in self.winfo_children()):
+            return False
+        return True
 
     def _snip_zones(self) -> None:
         win = self._target_rect()
@@ -767,6 +783,8 @@ class MainWindow(ctk.CTk):
                     self._finish_macro()
                 elif orden == "panic":
                     self._log("⛔ Pánico activado por hotkey")
+                elif orden in ("snip_zones", "snip_templates") and self._can_snip_from_hotkey():
+                    (self._snip_zones if orden == "snip_zones" else self._snip_templates)()
         except queue.Empty:
             pass
         except Exception:  # noqa: BLE001 - el bucle de sondeo nunca debe morir

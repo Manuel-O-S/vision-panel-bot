@@ -131,6 +131,16 @@ class TestHotkeys(unittest.TestCase):
         m._listener = _listener_sin_arrancar()
         self._tap(m, [Key.esc])  # no debe lanzar
 
+    def test_atajos_de_recorte(self):
+        from pynput.keyboard import Key, KeyCode
+        from workflows.hotkeys import DEFAULT_SNIP_TEMPLATES, DEFAULT_SNIP_ZONES
+        m = self._manager(extra={DEFAULT_SNIP_ZONES: lambda: self.calls.append("zonas"),
+                                 DEFAULT_SNIP_TEMPLATES: lambda: self.calls.append("plantilla")})
+        self._tap(m, [Key.ctrl, Key.shift, Key.alt, KeyCode.from_char("z")])
+        self._tap(m, [Key.ctrl, Key.shift, Key.alt, KeyCode.from_char("t")])
+        self._tap(m, [Key.ctrl, Key.shift, Key.alt, KeyCode.from_char("z")], injected=True)
+        self.assertEqual(self.calls, ["zonas", "plantilla"])
+
     def test_describe(self):
         from workflows.hotkeys import DEFAULT_TOGGLE, describe
         self.assertEqual(describe(DEFAULT_TOGGLE), "Ctrl + Shift + Alt + P")

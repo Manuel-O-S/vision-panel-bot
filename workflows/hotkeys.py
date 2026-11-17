@@ -5,6 +5,8 @@ Por defecto
     Ctrl + Shift + Alt + P  -> Play / Pausa
     Ctrl + Alt + K          -> Pánico
     Esc                     -> Pánico (desactivable)
+    Ctrl + Shift + Alt + Z  -> Recortar zonas      (vía ``extra``)
+    Ctrl + Shift + Alt + T  -> Recortar plantilla  (vía ``extra``)
 
 Los callbacks se ejecutan en el hilo del listener de pynput, NO en el de la GUI:
     - ``on_panic`` debe ser thread-safe y rápido (p. ej. ``engine.panic``).
@@ -23,11 +25,14 @@ from pynput import keyboard
 
 log = logging.getLogger(__name__)
 
-__all__ = ["DEFAULT_TOGGLE", "DEFAULT_PANIC", "ESC_PANIC", "HotkeyManager", "describe"]
+__all__ = ["DEFAULT_TOGGLE", "DEFAULT_PANIC", "DEFAULT_SNIP_ZONES", "DEFAULT_SNIP_TEMPLATES",
+           "ESC_PANIC", "HotkeyManager", "describe"]
 
 DEFAULT_TOGGLE = "<ctrl>+<shift>+<alt>+p"
 DEFAULT_PANIC = "<ctrl>+<alt>+k"
 ESC_PANIC = "<esc>"
+DEFAULT_SNIP_ZONES = "<ctrl>+<shift>+<alt>+z"
+DEFAULT_SNIP_TEMPLATES = "<ctrl>+<shift>+<alt>+t"
 
 
 def describe(combo: str) -> str:
@@ -45,7 +50,9 @@ class HotkeyManager:
         panic: str = DEFAULT_PANIC,
         esc_panic: bool = True,
         ignore_injected: bool = True,
+        extra: dict[str, Callable[[], None]] | None = None,
     ) -> None:
+        """``extra``: atajos adicionales ``{combinación: callback}`` (mismas reglas que on_toggle)."""
         self._on_toggle = on_toggle
         self._on_panic = on_panic
         self.toggle_combo = toggle
@@ -59,6 +66,9 @@ class HotkeyManager:
             keyboard.HotKey(keyboard.HotKey.parse(toggle), self._safe(on_toggle, "play/pausa")),
             keyboard.HotKey(keyboard.HotKey.parse(panic), self._safe(on_panic, "pánico")),
         ]
+        self.extra_combos = list(extra or {})
+        for combo, cb in (extra or {}).items():
+            self._hotkeys.append(keyboard.HotKey(keyboard.HotKey.parse(combo), self._safe(cb, describe(combo))))
         self._esc = keyboard.HotKey(keyboard.HotKey.parse(ESC_PANIC), self._safe(on_panic, "pánico (Esc)"))
         self._listener: keyboard.Listener | None = None
 
@@ -104,9 +114,10 @@ class HotkeyManager:
         self._listener = keyboard.Listener(on_press=self._press, on_release=self._release)
         self._listener.daemon = True
         self._listener.start()
-        log.info("Hotkeys activos: %s (play/pausa), %s (pánico)%s",
+        log.info("Hotkeys activos: %s (play/pausa), %s (pánico)%s%s",
                  describe(self.toggle_combo), describe(self.panic_combo),
-                 ", Esc (pánico)" if self.esc_panic else "")
+                 ", Esc (pánico)" if self.esc_panic else "",
+                 "".join(f", {describe(c)}" for c in self.extra_combos))
 
     def stop(self) -> None:
         if self._listener is not None:
