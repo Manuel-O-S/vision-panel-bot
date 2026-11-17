@@ -42,7 +42,7 @@ from typing import Any
 
 import numpy as np
 
-from core.actions import ActionContext, ActionRunner, DefaultActionRunner
+from core.actions import ActionContext, ActionError, ActionRunner, DefaultActionRunner, expand_actions
 from core.entropy import dormir_entropico, generar_delay_entropico
 from core.geometry import Rect
 from core.rules import BASELINE, Flow, Loop, Rule, ZoneObservation
@@ -402,7 +402,7 @@ class Engine:
                 for regla in disparadas:
                     self._emit(EventType.RULE_FIRED,
                                {"loop": loop.name, "proceso": proc.name, "regla": regla.name})
-                    if not self._fire(regla, snap):
+                    if not self._fire(flow, regla, snap):
                         return False
                 if disparadas:
                     # La pantalla cambió: los procesos siguientes ven un frame nuevo.
@@ -417,7 +417,7 @@ class Engine:
                 return False
         return True
 
-    def _fire(self, rule: Rule, snap: _Snapshot) -> bool:
+    def _fire(self, flow: Flow, rule: Rule, snap: _Snapshot) -> bool:
         """Delay entrópico previo + acciones de la regla. False => detener motor."""
         d_min, d_max = rule.delay
         if d_max > 0 and not dormir_entropico(d_min, d_max, self._stop_event):
@@ -425,8 +425,15 @@ class Engine:
         if not self._checkpoint():  # respeta una pausa pulsada durante el delay
             return False
 
-        ctx = ActionContext(snap.window, snap.zones, snap.observations, self._stop_event, rule.name)
-        for i, accion in enumerate(rule.actions, start=1):
+        try:
+            pasos = list(expand_actions(rule.actions, flow.actions))
+        except ActionError as exc:
+            self._emit(EventType.ERROR, f"{rule.name}: {exc}")
+            return not self._stop_event.is_set()
+
+        ctx = ActionContext(snap.window, snap.zones, snap.observations, self._stop_event, rule.name,
+                            log=lambda m, r=rule.name: self._emit(EventType.LOG, f"[{r}] {m}"))
+        for i, accion in enumerate(pasos, start=1):
             if self._stop_event.is_set():
                 return False
             try:

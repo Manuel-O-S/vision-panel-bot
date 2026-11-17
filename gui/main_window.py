@@ -38,7 +38,7 @@ from core.engine import Engine, EngineEvent, EngineState, EventType
 from core.geometry import Rect, RelativeZone
 from core.rules import BASELINE, TemplateRef
 from core.vision import TemplateLibrary, WindowLocator, list_windows, primary_screen, read_image
-from gui.block_editor import FlowEditor
+from gui.block_editor import ActionsEditor, FlowEditor
 from gui.snipping_tool import Snip, SnippingTool, bgr_to_photo
 from workflows.hotkeys import DEFAULT_PANIC, DEFAULT_TOGGLE, HotkeyManager, describe
 from workflows.task_manager import Task, TaskError, TaskManager, save_template_image
@@ -74,6 +74,7 @@ class MainWindow(ctk.CTk):
         self.task_path: Path | None = None
         self.dirty = False
         self._ui_queue: queue.Queue[str] = queue.Queue()
+        self._lib_selected: str | None = None
         self._thumbs: list[tk.PhotoImage] = []
         self._log_lines = 0
         self._loading = True  # silencia los callbacks mientras se rellena la UI
@@ -141,12 +142,13 @@ class MainWindow(ctk.CTk):
     def _build_tabs(self) -> None:
         self.tabs = ctk.CTkTabview(self)
         self.tabs.grid(row=0, column=1, sticky="nsew", padx=10, pady=(0, 10))
-        for nombre in ("Inicio", "Editor", "Zonas y plantillas", "Ajustes", "Registro"):
+        for nombre in ("Inicio", "Editor", "Acciones", "Zonas y plantillas", "Ajustes", "Registro"):
             self.tabs.add(nombre)
         self._build_home(self.tabs.tab("Inicio"))
         self.editor = FlowEditor(self.tabs.tab("Editor"), on_change=self._mark_dirty,
                                  base_dir=self.root_dir)
         self.editor.pack(fill="both", expand=True)
+        self._build_library(self.tabs.tab("Acciones"))
         self._build_assets(self.tabs.tab("Zonas y plantillas"))
         self._build_settings(self.tabs.tab("Ajustes"))
         self.log_box = ctk.CTkTextbox(self.tabs.tab("Registro"), font=ctk.CTkFont(family="Consolas", size=12))
@@ -191,6 +193,89 @@ class MainWindow(ctk.CTk):
         self._set_monitor("Pulsa Play para ver aquí lo que detecta cada zona.\n"
                           "Al iniciar se toma el Baseline (estado neutro) de cada zona: "
                           "deja la aplicación en su estado de reposo.")
+
+    def _build_library(self, tab: Any) -> None:
+        tab.grid_columnconfigure(1, weight=1)
+        tab.grid_rowconfigure(0, weight=1)
+        izq = ctk.CTkFrame(tab, width=220)
+        izq.grid(row=0, column=0, sticky="nsw", padx=(0, 8))
+        izq.grid_propagate(False)
+        ctk.CTkLabel(izq, text="BIBLIOTECA DE ACCIONES", font=ctk.CTkFont(size=12, weight="bold")
+                     ).pack(anchor="w", padx=10, pady=(10, 2))
+        ctk.CTkLabel(izq, text="Secuencias reutilizables que las\nreglas invocan (A1, A2…).",
+                     text_color="gray60", justify="left").pack(anchor="w", padx=10)
+        ctk.CTkButton(izq, text="+ Nueva acción", fg_color="#3d8a3d",
+                      command=self._new_library_action).pack(fill="x", padx=10, pady=8)
+        self.lib_list = ctk.CTkScrollableFrame(izq, fg_color="transparent")
+        self.lib_list.pack(fill="both", expand=True, padx=4, pady=(0, 6))
+        self.lib_panel = ctk.CTkScrollableFrame(tab)
+        self.lib_panel.grid(row=0, column=1, sticky="nsew")
+
+    def _refresh_library(self) -> None:
+        flow = self.task.flow
+        if self._lib_selected not in flow.actions:
+            self._lib_selected = next(iter(flow.actions), None)
+        self._render_library_list()
+
+        for w in self.lib_panel.winfo_children():
+            w.destroy()
+        nombre = self._lib_selected
+        if nombre is None:
+            ctk.CTkLabel(self.lib_panel, text="Crea una acción con '+ Nueva acción' y luego asígnala "
+                         "a una regla desde su tarjeta.", text_color="gray60").pack(pady=30)
+            return
+        cab = ctk.CTkFrame(self.lib_panel, fg_color="transparent")
+        cab.pack(fill="x", padx=8, pady=(8, 4))
+        ctk.CTkLabel(cab, text=f"Acción {nombre}", font=ctk.CTkFont(size=16, weight="bold")).pack(side="left")
+        usos = flow.action_usage(nombre)
+        ctk.CTkLabel(cab, text=f"   usada {usos} vez/veces", text_color="gray60").pack(side="left")
+        ctk.CTkButton(cab, text="🗑 Eliminar", width=100, fg_color="#8a3b3b",
+                      command=lambda: self._delete_library_action(nombre)).pack(side="right")
+        ActionsEditor(self.lib_panel, flow.actions[nombre], [z.name for z in flow.zones],
+                      list(flow.templates), self._on_library_change, base_dir=self.root_dir,
+                      library=list(flow.actions), owner=nombre, exclude=nombre,
+                      empty_text="(vacía: añade pasos o inserta código)").pack(fill="x", padx=8, pady=8)
+
+    def _select_library(self, nombre: str) -> None:
+        self._lib_selected = nombre
+        self._refresh_library()
+
+    def _render_library_list(self) -> None:
+        flow = self.task.flow
+        for w in self.lib_list.winfo_children():
+            w.destroy()
+        for nombre, pasos in flow.actions.items():
+            sel = nombre == self._lib_selected
+            ctk.CTkButton(self.lib_list, text=f"⚡ {nombre}   ({len(pasos)} paso{'s' if len(pasos) != 1 else ''})",
+                          anchor="w", fg_color="#1f538d" if sel else "#2b2b2b",
+                          command=lambda n=nombre: self._select_library(n)).pack(fill="x", pady=2)
+
+    def _on_library_change(self) -> None:
+        self._render_library_list()  # sólo la lista: no reconstruye el editor (mantiene el foco)
+        self._mark_dirty()
+
+    def _new_library_action(self) -> None:
+        flow = self.task.flow
+        nombre = flow.next_action_name()
+        flow.actions[nombre] = []
+        self._lib_selected = nombre
+        self._refresh_library()
+        self.editor.refresh()
+        self._mark_dirty()
+
+    def _delete_library_action(self, nombre: str) -> None:
+        flow = self.task.flow
+        usos = flow.action_usage(nombre)
+        msg = f"¿Eliminar la acción {nombre!r}?"
+        if usos:
+            msg += f"\n\nSe invoca {usos} vez/veces: esas reglas darán error hasta que elijas otra."
+        if not messagebox.askyesno("Eliminar acción", msg, parent=self):
+            return
+        del flow.actions[nombre]
+        self._lib_selected = None
+        self._refresh_library()
+        self.editor.refresh()
+        self._mark_dirty()
 
     def _build_assets(self, tab: Any) -> None:
         tab.grid_columnconfigure((0, 1), weight=1)
@@ -274,7 +359,9 @@ class MainWindow(ctk.CTk):
         self.hotkeys.esc_panic = st.esc_panic
         self._loading = False
         self.editor.set_flow(self.task.flow)
+        self._lib_selected = None
         self._refresh_assets()
+        self._refresh_library()
         self.dirty = False
         self._refresh_header()
 
@@ -422,6 +509,7 @@ class MainWindow(ctk.CTk):
     def _after_assets_change(self) -> None:
         self._mark_dirty()
         self._refresh_assets()
+        self._refresh_library()
         self.editor.refresh()
         self.tabs.set("Zonas y plantillas")
 

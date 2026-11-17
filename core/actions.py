@@ -10,6 +10,8 @@ Una acción es un dict serializable (va tal cual en el .tarea):
     {"tipo": "texto",   "texto": "hola"}
     {"tipo": "esperar", "min": 0.2, "max": 0.6}                         # delay entrópico
     {"tipo": "macro",   "archivo": "macros/login.macro", "velocidad": 1.0}  # macro grabada
+    {"tipo": "accion",  "nombre": "A1"}            # invoca una acción de la biblioteca
+    {"tipo": "codigo",  "codigo": "tecla('enter')"}  # código Python del usuario
     {"tipo": "exe",     "ruta": "C:/ruta/programa.exe"}                 # reservado (V2)
 
 El motor llama a ``runner(accion, contexto)`` desde su hilo de trabajo. Se
@@ -20,8 +22,8 @@ from __future__ import annotations
 
 import logging
 import threading
-from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -31,7 +33,10 @@ from core.rules import ZoneObservation
 
 log = logging.getLogger(__name__)
 
-__all__ = ["ActionContext", "ActionRunner", "ActionError", "DefaultActionRunner", "DryRunActionRunner"]
+__all__ = ["ActionContext", "ActionRunner", "ActionError", "DefaultActionRunner", "DryRunActionRunner",
+           "expand_actions", "MAX_ACTION_DEPTH"]
+
+MAX_ACTION_DEPTH = 8
 
 
 class ActionError(RuntimeError):
@@ -47,9 +52,31 @@ class ActionContext:
     observations: Mapping[str, ZoneObservation]  # lo que se vio en el ciclo
     stop_event: threading.Event                  # activo => abortar cuanto antes
     rule: str                                    # regla que disparó la acción
+    log: Callable[[str], None] = field(default=lambda _m: None)  # -> pestaña Registro
 
 
 ActionRunner = Callable[[Mapping[str, Any], ActionContext], None]
+
+
+def expand_actions(actions: Sequence[Mapping[str, Any]],
+                   library: Mapping[str, Sequence[Mapping[str, Any]]],
+                   _stack: tuple[str, ...] = ()) -> Iterator[Mapping[str, Any]]:
+    """Sustituye cada {"tipo": "accion", "nombre": "A1"} por las acciones de A1.
+
+    Detecta referencias circulares (A1 -> A2 -> A1) y anidamiento excesivo.
+    """
+    for accion in actions:
+        if str(accion.get("tipo", "")).casefold() != "accion":
+            yield accion
+            continue
+        nombre = accion.get("nombre")
+        if nombre not in library:
+            raise ActionError(f"La acción {nombre!r} no existe en la biblioteca")
+        if nombre in _stack:
+            raise ActionError("Referencia circular: " + " → ".join((*_stack, nombre)))
+        if len(_stack) >= MAX_ACTION_DEPTH:
+            raise ActionError(f"Demasiado anidamiento de acciones (máx. {MAX_ACTION_DEPTH})")
+        yield from expand_actions(library[nombre], library, (*_stack, nombre))
 
 
 def _rel(action: Mapping[str, Any], key: str, default: float) -> float:
@@ -95,6 +122,7 @@ class DefaultActionRunner:
             "texto": self._text,
             "esperar": self._wait,
             "macro": self._macro,
+            "codigo": self._code,
             "exe": self._exe,
         }
 
@@ -143,6 +171,22 @@ class DefaultActionRunner:
             ruta = self.base_dir / ruta
         macro = Macro.load(ruta)
         play_macro(macro, ctx.window, ctx.stop_event, speed=float(action.get("velocidad", 1.0)))
+
+    def _code(self, action: Mapping[str, Any], ctx: ActionContext) -> None:
+        """Código Python del usuario, aislado en try-except (ver core/user_code.py)."""
+        from core.user_code import UserCodeError, build_namespace, run_user_code
+        entrada = self._input()
+        ns = build_namespace(
+            ctx,
+            click=lambda x, y, b: entrada.click(x, y, button=b, jitter_px=0),
+            key=entrada.press,
+            write=entrada.type_text,
+            log=ctx.log,
+        )
+        try:
+            run_user_code(str(action.get("codigo", "")), ns)
+        except UserCodeError as exc:
+            raise ActionError(str(exc)) from None
 
     def _exe(self, action: Mapping[str, Any], ctx: ActionContext) -> None:
         # Contenedor reservado para acciones basadas en ejecutables externos.

@@ -30,6 +30,7 @@ from core.rules import (
     BASELINE, And, Condition, Flow, Loop, Not, Or, Process, Rule, Trigger, ZoneIs,
     condition_to_text, parse_expression,
 )
+from gui.code_editor import CodeEditor
 
 __all__ = ["FlowEditor"]
 
@@ -331,6 +332,8 @@ ACTION_LABELS = {
     "texto": "Escribir texto",
     "esperar": "Esperar",
     "macro": "Reproducir macro",
+    "accion": "Ejecutar acción (A1…)",
+    "codigo": "Código Python",
     "exe": "Ejecutable (.exe)",
 }
 _LABEL_TO_TYPE = {v: k for k, v in ACTION_LABELS.items()}
@@ -340,33 +343,71 @@ ACTION_DEFAULTS: dict[str, dict[str, Any]] = {
     "texto": {"tipo": "texto", "texto": ""},
     "esperar": {"tipo": "esperar", "min": 0.2, "max": 0.5},
     "macro": {"tipo": "macro", "archivo": "", "velocidad": 1.0},
+    "accion": {"tipo": "accion", "nombre": ""},
+    "codigo": {"tipo": "codigo", "codigo": ""},
     "exe": {"tipo": "exe", "ruta": ""},
 }
+NO_LIBRARY = "(biblioteca vacía)"
+
+
+def _first_line(code: str) -> str:
+    lineas = [l.strip() for l in code.splitlines() if l.strip() and not l.strip().startswith("#")]
+    if not lineas:
+        return "(vacío)"
+    extra = f"  (+{len(lineas) - 1} líneas)" if len(lineas) > 1 else ""
+    return (lineas[0][:40] + "…" if len(lineas[0]) > 40 else lineas[0]) + extra
 
 
 class ActionsEditor(ctk.CTkFrame):
-    def __init__(self, master: Any, rule: Rule, zones: list[str], templates: list[str],
-                 on_change: Callable[[], None], base_dir: Path | None = None) -> None:
+    """Lista editable de acciones (de una regla o de la biblioteca A1, A2…)."""
+
+    def __init__(self, master: Any, actions: list[dict[str, Any]], zones: list[str],
+                 templates: list[str], on_change: Callable[[], None], base_dir: Path | None = None,
+                 library: list[str] | None = None, owner: str = "", exclude: str | None = None,
+                 empty_text: str = "(sin acciones: la regla sólo se registrará)") -> None:
         super().__init__(master, fg_color="transparent")
         self.base_dir = base_dir or Path.cwd()
-        self.rule = rule
+        self.actions = actions
         self.zones = zones
         self.templates = templates
+        self.library = [n for n in (library or []) if n != exclude]  # A1 no puede invocarse a sí misma
+        self.owner = owner
+        self.empty_text = empty_text
         self.on_change = on_change
         self.list = ctk.CTkFrame(self, fg_color="transparent")
         self.list.pack(fill="x")
-        ctk.CTkButton(self, text="+ Añadir acción", width=140,
-                      command=self._add).pack(anchor="w", pady=(4, 0))
+        botones = ctk.CTkFrame(self, fg_color="transparent")
+        botones.pack(anchor="w", pady=(4, 0))
+        ctk.CTkButton(botones, text="+ Añadir acción", width=140, command=self._add).pack(side="left")
+        ctk.CTkButton(botones, text="</> Insertar código", width=150, fg_color="#6b4fb0",
+                      command=self._insert_code).pack(side="left", padx=8)
         self._render()
 
     def _render(self) -> None:
         for w in self.list.winfo_children():
             w.destroy()
-        if not self.rule.actions:
-            ctk.CTkLabel(self.list, text="(sin acciones: la regla sólo se registrará)",
-                         text_color="gray60").pack(anchor="w", padx=4)
-        for i, accion in enumerate(self.rule.actions):
+        if not self.actions:
+            ctk.CTkLabel(self.list, text=self.empty_text, text_color="gray60").pack(anchor="w", padx=4)
+        for i, accion in enumerate(self.actions):
             self._render_row(i, accion)
+
+    def _insert_code(self) -> None:
+        self.actions.append(copy.deepcopy(ACTION_DEFAULTS["codigo"]))
+        i = len(self.actions) - 1
+        self._render()
+        self.on_change()
+        self._edit_code(i)
+
+    def _edit_code(self, i: int) -> None:
+        accion = self.actions[i]
+
+        def guardar(codigo: str) -> None:
+            accion["codigo"] = codigo
+            self._render()
+            self.on_change()
+
+        CodeEditor(self, accion.get("codigo", ""), guardar,
+                   title=f"Insertar código — {self.owner or 'acción'} #{i + 1}")
 
     def _render_row(self, i: int, a: dict[str, Any]) -> None:
         fila = ctk.CTkFrame(self.list, fg_color="#24402a", corner_radius=6)
@@ -419,6 +460,21 @@ class ActionsEditor(ctk.CTkFrame):
             ctk.CTkLabel(fila, text="velocidad").pack(side="left", padx=(8, 2))
             _entry(fila, a.get("velocidad", 1.0), _float_in(0.1, 10), setter("velocidad"),
                    width=52).pack(side="left")
+        elif t == "accion":
+            opciones = self.library or [NO_LIBRARY]
+            m = ctk.CTkOptionMenu(fila, values=opciones, width=130,
+                                  command=lambda v: setter("nombre")("" if v == NO_LIBRARY else v))
+            m.set(a.get("nombre") or opciones[0])
+            m.pack(side="left", padx=4)
+            if not a.get("nombre") and self.library:
+                a["nombre"] = self.library[0]
+            ctk.CTkLabel(fila, text="(se define en la pestaña Acciones)",
+                         text_color="gray60").pack(side="left", padx=4)
+        elif t == "codigo":
+            ctk.CTkLabel(fila, text=_first_line(a.get("codigo", "")), anchor="w",
+                         font=ctk.CTkFont(family="Consolas", size=12)).pack(side="left", padx=6)
+            ctk.CTkButton(fila, text="✎ Editar código", width=110, fg_color="#6b4fb0",
+                          command=lambda: self._edit_code(i)).pack(side="left", padx=4)
         elif t == "exe":
             _entry(fila, a.get("ruta", ""), str, setter("ruta"), width=220,
                    placeholder="C:/ruta/programa.exe").pack(side="left", padx=4)
@@ -445,27 +501,324 @@ class ActionsEditor(ctk.CTkFrame):
         entry._var.set(p.as_posix())  # type: ignore[attr-defined]  # dispara la validación
 
     def _add(self) -> None:
-        self.rule.actions.append(copy.deepcopy(ACTION_DEFAULTS["click"]))
+        self.actions.append(copy.deepcopy(ACTION_DEFAULTS["click"]))
         self._render()
         self.on_change()
 
     def _change_type(self, i: int, tipo: str) -> None:
-        self.rule.actions[i] = copy.deepcopy(ACTION_DEFAULTS[tipo])
+        self.actions[i] = copy.deepcopy(ACTION_DEFAULTS[tipo])
         self._render()
         self.on_change()
 
     def _remove(self, i: int) -> None:
-        del self.rule.actions[i]
+        del self.actions[i]
         self._render()
         self.on_change()
 
     def _move(self, i: int, d: int) -> None:
         j = i + d
-        if 0 <= j < len(self.rule.actions):
-            acts = self.rule.actions
+        if 0 <= j < len(self.actions):
+            acts = self.actions
             acts[i], acts[j] = acts[j], acts[i]
             self._render()
             self.on_change()
+
+
+# =========================================================================== #
+# Tarjetas de regla ("No-Code ligero")
+# =========================================================================== #
+CARD_OPS = {"(sola)": None, "Y (AND)": "Y", "O (OR)": "O", "NOT (Y NO)": "NOT"}
+_OP_LABEL = {v: k for k, v in CARD_OPS.items()}
+NO_ACTION = "(ninguna)"
+
+
+def card_form(cond: Condition) -> tuple[ZoneIs, str | None, ZoneIs | None] | None:
+    """Condición -> (C1, operador, C2) si cabe en una tarjeta; ``None`` si es avanzada."""
+    if isinstance(cond, ZoneIs):
+        return cond, None, None
+    if isinstance(cond, (And, Or)) and len(cond.items) == 2:
+        a, b = cond.items
+        if isinstance(a, ZoneIs) and isinstance(b, ZoneIs):
+            return a, "Y" if isinstance(cond, And) else "O", b
+        if isinstance(cond, And) and isinstance(a, ZoneIs) and isinstance(b, Not) \
+                and isinstance(b.item, ZoneIs):
+            return a, "NOT", b.item
+    return None
+
+
+def card_condition(a: ZoneIs, op: str | None, b: ZoneIs | None) -> Condition:
+    if op is None or b is None:
+        return a
+    if op == "Y":
+        return And((a, b))
+    if op == "O":
+        return Or((a, b))
+    return And((a, Not(b)))
+
+
+class RuleCard(tk.Frame):
+    """Una regla en una tarjeta compacta, con widgets nativos de Tk/ttk (ligeros):
+
+        ◆ [Nombre        ]                          [✓ Activa] [✎ Detalle] [🗑]
+        SI        [Zona ▼][Estado ▼]  [Y (AND) ▼]  [Zona ▼][Estado ▼]
+        ENTONCES  [Acción A1 ▼] [</> Insertar código]   Delay mín [1.0] máx [3.5] s
+
+    Los widgets de CustomTkinter se dibujan sobre un canvas propio y son ~10×
+    más caros de crear; con decenas de reglas el panel se volvía lento.
+    """
+
+    BG = "#232a23"
+    FG = "#dce4ee"
+    MUTED = "#8b949e"
+
+    def __init__(self, master: Any, editor: FlowEditor, proc: Process, rule: Rule) -> None:
+        super().__init__(master, bg=self.BG, highlightthickness=1, highlightbackground="#3d5a3d",
+                         padx=8, pady=6)
+        _style_card_widgets(self)
+        self.editor = editor
+        self.proc = proc
+        self.rule = rule
+        self.zones = editor.zones or ["(sin zonas)"]
+        self.states = [BASELINE_LABEL] + editor.templates
+
+        # --- cabecera ---
+        cab = self._row()
+        self._label(cab, "◆", fg=COLOR_RULE)
+        self._entry(cab, rule.name, _parse_name, self._rename, width=26)
+        self._button(cab, "🗑", self._delete, bg="#4a2a2a").pack(side="right")
+        self._button(cab, "✎ Detalle", lambda: editor.refresh(keep=rule)).pack(side="right", padx=4)
+        activa = tk.BooleanVar(value=rule.enabled)
+        tk.Checkbutton(cab, text="Activa", variable=activa, bg=self.BG, fg=self.FG,
+                       selectcolor="#1f538d", activebackground=self.BG, activeforeground=self.FG,
+                       command=lambda: (setattr(rule, "enabled", activa.get()), self._changed())
+                       ).pack(side="right", padx=6)
+        self._keep = [activa]
+
+        # --- SI ---
+        si = self._row()
+        self._label(si, "SI", fg="#b48cff", bold=True, width=9)
+        forma = card_form(rule.condition)
+        if forma is None:
+            self._label(si, condition_to_text(rule.condition), wrap=520)
+            self._label(si, "(avanzada: edítala en Detalle)", fg="#e0a050")
+        else:
+            self.a, self.op, self.b = forma
+            self._combo(si, self.zones, self.a.zone, lambda v: self._set_leaf("a", zone=v), 12)
+            self._combo(si, self.states, self._state_label(self.a),
+                        lambda v: self._set_leaf("a", target=self._state_value(v)), 14)
+            self._combo(si, list(CARD_OPS), _OP_LABEL[self.op], self._set_op, 11)
+            self.b_frame = tk.Frame(si, bg=self.BG)
+            self.b_frame.pack(side="left")
+            self._render_b()
+
+        # --- ENTONCES ---
+        ent = self._row(pady=(2, 0))
+        self._label(ent, "ENTONCES", fg=COLOR_RULE, bold=True, width=9)
+        self.action_combo = self._combo(ent, [NO_ACTION], NO_ACTION, self._pick_action, 16)
+        self.code_btn = self._button(ent, "", self._edit_code, bg="#4b3a7a")
+        self.code_btn.pack(side="left", padx=4)
+        self._label(ent, "   Delay  mín")
+        valores = list(rule.delay)
+        self._delay_entries: list[tk.Entry] = []
+        for i in (0, 1):
+            if i == 1:
+                self._label(ent, "máx")
+            self._delay_entries.append(
+                self._entry(ent, valores[i], _float_in(0, 3600), lambda v, i=i: self._set_delay(i, v), 6))
+        self._label(ent, "s")
+        self._sync_actions()
+
+    # --------------------------- widgets base --------------------------- #
+    def _row(self, pady: tuple[int, int] = (2, 2)) -> tk.Frame:
+        f = tk.Frame(self, bg=self.BG)
+        f.pack(fill="x", pady=pady)
+        return f
+
+    def _label(self, parent: Any, text: str, fg: str | None = None, bold: bool = False,
+               width: int | None = None, wrap: int = 0) -> tk.Label:
+        lbl = tk.Label(parent, text=text, bg=self.BG, fg=fg or self.MUTED, anchor="w",
+                       font=("Segoe UI", 10, "bold" if bold else "normal"), wraplength=wrap,
+                       justify="left", **({"width": width} if width else {}))
+        lbl.pack(side="left", padx=(0, 4))
+        return lbl
+
+    def _button(self, parent: Any, text: str, cmd: Callable[[], None], bg: str = "#3a3a3a") -> tk.Button:
+        return tk.Button(parent, text=text, command=cmd, bg=bg, fg=self.FG, relief="flat", bd=0,
+                         activebackground="#1f538d", activeforeground="white", padx=8, pady=2,
+                         cursor="hand2", font=("Segoe UI", 10))
+
+    def _combo(self, parent: Any, values: list[str], current: str, cmd: Callable[[str], None],
+               width: int) -> ttk.Combobox:
+        c = ttk.Combobox(parent, values=values, width=width, state="readonly", style="Card.TCombobox")
+        c.set(current)
+        c.bind("<<ComboboxSelected>>", lambda _e: (c.selection_clear(), cmd(c.get())))
+        c.pack(side="left", padx=2)
+        return c
+
+    def _entry(self, parent: Any, value: Any, parse: Callable[[str], Any], apply: Callable[[Any], None],
+               width: int) -> tk.Entry:
+        var = tk.StringVar(value=str(value))
+        e = tk.Entry(parent, textvariable=var, width=width, bg="#343638", fg=self.FG,
+                     insertbackground=self.FG, relief="flat", highlightthickness=1,
+                     highlightbackground="#565b5e", highlightcolor="#1f538d", font=("Segoe UI", 10))
+
+        def _on_change(*_a: object) -> None:
+            try:
+                v = parse(var.get())
+            except (ValueError, TypeError):
+                e.configure(highlightbackground=COLOR_ERROR, highlightcolor=COLOR_ERROR)
+                return
+            e.configure(highlightbackground="#565b5e", highlightcolor="#1f538d")
+            apply(v)
+
+        var.trace_add("write", _on_change)
+        e._var = var  # type: ignore[attr-defined]
+        e.pack(side="left", padx=2, ipady=2)
+        return e
+
+    # ---------------------------- condición ---------------------------- #
+    @staticmethod
+    def _state_label(z: ZoneIs) -> str:
+        return BASELINE_LABEL if z.target == BASELINE else z.target
+
+    @staticmethod
+    def _state_value(label: str) -> str:
+        return BASELINE if label == BASELINE_LABEL else label
+
+    def _render_b(self) -> None:
+        for w in self.b_frame.winfo_children():
+            w.destroy()
+        if self.op is None:
+            return
+        if self.b is None:
+            self.b = ZoneIs(self.zones[-1] if self.editor.zones else self.a.zone,
+                            self.editor.templates[0] if self.editor.templates else BASELINE)
+        self._combo(self.b_frame, self.zones, self.b.zone, lambda v: self._set_leaf("b", zone=v), 12)
+        self._combo(self.b_frame, self.states, self._state_label(self.b),
+                    lambda v: self._set_leaf("b", target=self._state_value(v)), 14)
+
+    def _set_leaf(self, which: str, **cambios: str) -> None:
+        hoja: ZoneIs = getattr(self, which)
+        datos = {"zone": hoja.zone, "target": hoja.target, "threshold": hoja.threshold, **cambios}
+        setattr(self, which, ZoneIs(**datos))
+        self._commit_condition()
+
+    def _set_op(self, label: str) -> None:
+        self.op = CARD_OPS[label]
+        self._render_b()
+        self._commit_condition()
+
+    def _commit_condition(self) -> None:
+        self.rule.condition = card_condition(self.a, self.op, self.b)
+        self.rule.reset()
+        self._changed()
+
+    def _set_delay(self, i: int, v: float) -> None:
+        valores = list(self.rule.delay)
+        valores[i] = v
+        try:
+            otro = float(self._delay_entries[1 - i].get().replace(",", "."))
+            valores[1 - i] = otro
+        except (ValueError, IndexError):
+            pass
+        ok = 0 <= valores[0] <= valores[1]
+        for e in self._delay_entries:
+            e.configure(highlightbackground="#565b5e" if ok else COLOR_ERROR)
+        if ok:
+            self.rule.delay = (valores[0], valores[1])
+            self._changed()
+
+    # ----------------------------- acciones ---------------------------- #
+    def _code_action(self) -> dict[str, Any] | None:
+        return next((a for a in self.rule.actions if a.get("tipo") == "codigo"), None)
+
+    def _sync_actions(self) -> None:
+        library = list(self.editor.flow.actions) if self.editor.flow else []
+        otras = [a for a in self.rule.actions if a.get("tipo") != "codigo"]
+        if not otras:
+            actual = NO_ACTION
+        elif len(otras) == 1 and otras[0].get("tipo") == "accion":
+            actual = otras[0].get("nombre") or NO_ACTION
+        else:
+            actual = f"(personalizada: {len(otras)})"
+        valores = [NO_ACTION] + library + ([actual] if actual not in library and actual != NO_ACTION else [])
+        self.action_combo.configure(values=valores)
+        self.action_combo.set(actual)
+        codigo = self._code_action()
+        self.code_btn.configure(text="</> Código ✔" if codigo and codigo.get("codigo", "").strip()
+                                else "</> Insertar código")
+
+    def _pick_action(self, valor: str) -> None:
+        if valor.startswith("(personalizada"):
+            return
+        otras = [a for a in self.rule.actions if a.get("tipo") != "codigo"]
+        personalizada = otras and not (len(otras) == 1 and otras[0].get("tipo") == "accion")
+        if personalizada and not messagebox.askyesno(
+                "Cambiar acción", "La regla tiene acciones personalizadas. ¿Reemplazarlas?", parent=self):
+            self._sync_actions()
+            return
+        codigos = [a for a in self.rule.actions if a.get("tipo") == "codigo"]
+        nuevas = [] if valor == NO_ACTION else [{"tipo": "accion", "nombre": valor}]
+        self.rule.actions[:] = nuevas + codigos
+        self._sync_actions()
+        self._changed()
+
+    def _edit_code(self) -> None:
+        accion = self._code_action()
+
+        def guardar(codigo: str) -> None:
+            actual = self._code_action()
+            if not codigo.strip():
+                if actual is not None:
+                    self.rule.actions.remove(actual)
+            elif actual is None:
+                self.rule.actions.append({"tipo": "codigo", "codigo": codigo})
+            else:
+                actual["codigo"] = codigo
+            self._sync_actions()
+            self._changed()
+
+        CodeEditor(self, accion.get("codigo", "") if accion else "", guardar,
+                   title=f"Insertar código — {self.rule.name}")
+
+    # ------------------------------ varios ----------------------------- #
+    def _rename(self, nombre: str) -> None:
+        self.rule.name = nombre
+        self._changed()
+
+    def _changed(self) -> None:
+        self.editor.relabel(self.rule)
+        self.editor.on_change()
+
+    def _delete(self) -> None:
+        if messagebox.askyesno("Eliminar", f"¿Eliminar la regla {self.rule.name!r}?", parent=self):
+            self.proc.rules.remove(self.rule)
+            self.editor.refresh(keep=self.proc)
+            self.editor.on_change()
+
+
+_CARD_STYLED: set[str] = set()
+
+
+def _style_card_widgets(widget: tk.Misc) -> None:
+    """Estilo oscuro para los ttk.Combobox de las tarjetas (una vez por intérprete Tk)."""
+    root = str(widget.winfo_toplevel().tk)
+    if root in _CARD_STYLED:
+        return
+    _CARD_STYLED.add(root)
+    st = ttk.Style(widget)
+    st.configure("Card.TCombobox", fieldbackground="#1f3b5c", background="#2a4d75",
+                 foreground="#dce4ee", arrowcolor="#dce4ee", bordercolor="#2a4d75",
+                 lightcolor="#2a4d75", darkcolor="#2a4d75", padding=3)
+    st.map("Card.TCombobox",
+           fieldbackground=[("readonly", "#1f3b5c")], foreground=[("readonly", "#dce4ee")],
+           selectbackground=[("readonly", "#1f3b5c")], selectforeground=[("readonly", "#dce4ee")],
+           background=[("active", "#1f538d")])
+    top = widget.winfo_toplevel()
+    top.option_add("*TCombobox*Listbox.background", "#2b2b2b")
+    top.option_add("*TCombobox*Listbox.foreground", "#dce4ee")
+    top.option_add("*TCombobox*Listbox.selectBackground", "#1f538d")
+    top.option_add("*TCombobox*Listbox.font", ("Segoe UI", 10))
 
 
 # =========================================================================== #
@@ -586,6 +939,13 @@ class FlowEditor(ctk.CTkFrame):
     def _tags(obj: Any) -> tuple[str, ...]:
         base = "loop" if isinstance(obj, Loop) else "process" if isinstance(obj, Process) else "rule"
         return (base,) if getattr(obj, "enabled", True) else (base, "off")
+
+    def relabel(self, obj: Any) -> None:
+        """Actualiza el texto del árbol para ``obj`` sin reconstruirlo."""
+        for iid, (o, _cont) in self._nodes.items():
+            if o is obj:
+                self.tree.item(iid, text=self._label(obj), tags=self._tags(obj))
+                return
 
     def _relabel(self) -> None:
         if self._current and self._current in self._nodes:
@@ -771,8 +1131,24 @@ class FlowEditor(ctk.CTkFrame):
         self._switch(f, "Activo", proc.enabled, lambda v: setattr(proc, "enabled", v))
         self._switch(f, "Exclusivo (sólo la primera regla verdadera por ciclo)", proc.exclusive,
                      lambda v: setattr(proc, "exclusive", v))
-        ctk.CTkLabel(f, text=f"{len(proc.rules)} regla(s). Usa '+ Regla' para añadir.",
-                     text_color="gray60").pack(anchor="w", padx=8, pady=(0, 8))
+
+        r = _section(self.panel, "REGLAS  (vista rápida en tarjetas)", COLOR_RULE)
+        r.configure(fg_color="transparent")
+        for regla in proc.rules:
+            RuleCard(r, self, proc, regla).pack(fill="x", pady=4, padx=2)
+        if not proc.rules:
+            ctk.CTkLabel(r, text="Sin reglas todavía.", text_color="gray60").pack(anchor="w", padx=4)
+        ctk.CTkButton(r, text="+ Regla rápida", width=150, fg_color="#3d8a3d",
+                      command=lambda: self._quick_rule(proc)).pack(anchor="w", pady=(6, 4))
+
+    def _quick_rule(self, proc: Process) -> None:
+        if self.flow is None:
+            return
+        zona = self.zones[0] if self.zones else "Zona 1"
+        proc.rules.append(Rule(_unique("Regla", {r.name for r in self.flow.iter_rules()}),
+                               ZoneIs(zona, BASELINE), delay=(1.0, 3.5)))
+        self.refresh(keep=proc)
+        self.on_change()
 
     def _panel_rule(self, rule: Rule) -> None:
         f = _section(self.panel, "REGLA", COLOR_RULE)
@@ -795,5 +1171,6 @@ class FlowEditor(ctk.CTkFrame):
         ConditionBuilder(c, rule, self.zones, self.templates, self._changed).pack(fill="x", padx=8, pady=8)
 
         a = _section(self.panel, "ENTONCES  (acciones, en orden)", COLOR_RULE)
-        ActionsEditor(a, rule, self.zones, self.templates, self._changed,
-                      base_dir=self.base_dir).pack(fill="x", padx=8, pady=8)
+        ActionsEditor(a, rule.actions, self.zones, self.templates, self._changed,
+                      base_dir=self.base_dir, library=list(self.flow.actions) if self.flow else [],
+                      owner=rule.name).pack(fill="x", padx=8, pady=8)

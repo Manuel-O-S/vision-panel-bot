@@ -595,6 +595,9 @@ class Flow:
     zones: list[RelativeZone] = field(default_factory=list)
     templates: dict[str, TemplateRef] = field(default_factory=dict)
     loops: list[Loop] = field(default_factory=list)
+    # Biblioteca de acciones con nombre ("A1", "A2"...): las reglas las invocan
+    # con la acción {"tipo": "accion", "nombre": "A1"}.
+    actions: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
 
     def zone(self, name: str) -> RelativeZone | None:
         return next((z for z in self.zones if z.name == name), None)
@@ -603,6 +606,23 @@ class Flow:
         for loop in self.loops:
             for proc in loop.processes:
                 yield from proc.rules
+
+    def iter_action_lists(self) -> Iterator[list[dict[str, Any]]]:
+        """Todas las listas de acciones: las de cada regla y las de la biblioteca."""
+        for regla in self.iter_rules():
+            yield regla.actions
+        yield from self.actions.values()
+
+    def next_action_name(self) -> str:
+        i = 1
+        while f"A{i}" in self.actions:
+            i += 1
+        return f"A{i}"
+
+    def action_usage(self, name: str) -> int:
+        """Cuántas veces se invoca la acción ``name``."""
+        return sum(1 for lista in self.iter_action_lists() for a in lista
+                   if a.get("tipo") == "accion" and a.get("nombre") == name)
 
     def requirements(self) -> dict[str, set[str]]:
         """zona -> {objetivos} que el motor debe medir en cada ciclo."""
@@ -627,7 +647,11 @@ class Flow:
             for obj in objetivos - {BASELINE}:
                 if obj not in self.templates:
                     errores.append(f"La plantilla {obj!r} (usada en {zona!r}) no existe")
-        return errores
+        for lista in self.iter_action_lists():
+            for a in lista:
+                if a.get("tipo") == "accion" and a.get("nombre") not in self.actions:
+                    errores.append(f"La acción {a.get('nombre')!r} no existe en la biblioteca")
+        return sorted(set(errores), key=errores.index)
 
     def reset(self) -> None:
         for loop in self.loops:
@@ -655,7 +679,8 @@ class Flow:
         self.zones = [dc_replace(z, name=new) if z.name == old else z for z in self.zones]
         for regla in self.iter_rules():
             regla.condition = rename_in_condition(regla.condition, zones={old: new})
-            for accion in regla.actions:
+        for lista in self.iter_action_lists():
+            for accion in lista:
                 if accion.get("zona") == old:
                     accion["zona"] = new
         return new
@@ -670,7 +695,8 @@ class Flow:
         self.templates = {(new if k == old else k): v for k, v in self.templates.items()}
         for regla in self.iter_rules():
             regla.condition = rename_in_condition(regla.condition, templates={old: new})
-            for accion in regla.actions:
+        for lista in self.iter_action_lists():
+            for accion in lista:
                 if accion.get("plantilla") == old:
                     accion["plantilla"] = new
         return new
@@ -681,6 +707,7 @@ class Flow:
             "zonas": [z.to_dict() for z in self.zones],
             "plantillas": {k: v.to_dict() for k, v in self.templates.items()},
             "loops": [l.to_dict() for l in self.loops],
+            "acciones": {k: [dict(a) for a in v] for k, v in self.actions.items()},
         }
 
     @classmethod
@@ -690,4 +717,5 @@ class Flow:
             zones=[RelativeZone.from_dict(z) for z in data.get("zonas", [])],
             templates={k: TemplateRef.from_dict(v) for k, v in data.get("plantillas", {}).items()},
             loops=[Loop.from_dict(l) for l in data.get("loops", [])],
+            actions={str(k): [dict(a) for a in v] for k, v in data.get("acciones", {}).items()},
         )
