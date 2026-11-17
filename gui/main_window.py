@@ -33,6 +33,7 @@ from typing import Any
 
 import customtkinter as ctk
 
+from actions.macro_recorder import MacroError, MacroRecorder
 from core.engine import Engine, EngineEvent, EngineState, EventType
 from core.geometry import Rect, RelativeZone
 from core.rules import BASELINE, TemplateRef
@@ -66,6 +67,8 @@ class MainWindow(ctk.CTk):
         self.tasks = tasks
         self.root_dir = root_dir
         self.templates_dir = root_dir / "assets" / "templates"
+        self.macros_dir = root_dir / "macros"
+        self._recorder: MacroRecorder | None = None
 
         self.task = Task.new()
         self.task_path: Path | None = None
@@ -124,7 +127,8 @@ class MainWindow(ctk.CTk):
                      font=ctk.CTkFont(size=11, weight="bold")).pack(anchor="w", padx=16, pady=(18, 2))
         for texto, cmd in (("✂  Recortar zonas", self._snip_zones),
                            ("🖼  Recortar plantilla", self._snip_templates),
-                           ("⟳  Recalibrar Baseline", self._recalibrate)):
+                           ("⟳  Recalibrar Baseline", self._recalibrate),
+                           ("⏺  Grabar macro", self._record_macro)):
             ctk.CTkButton(bar, text=texto, anchor="w", fg_color="#2f3b4d", command=cmd
                           ).pack(fill="x", padx=14, pady=3)
 
@@ -140,7 +144,8 @@ class MainWindow(ctk.CTk):
         for nombre in ("Inicio", "Editor", "Zonas y plantillas", "Ajustes", "Registro"):
             self.tabs.add(nombre)
         self._build_home(self.tabs.tab("Inicio"))
-        self.editor = FlowEditor(self.tabs.tab("Editor"), on_change=self._mark_dirty)
+        self.editor = FlowEditor(self.tabs.tab("Editor"), on_change=self._mark_dirty,
+                                 base_dir=self.root_dir)
         self.editor.pack(fill="both", expand=True)
         self._build_assets(self.tabs.tab("Zonas y plantillas"))
         self._build_settings(self.tabs.tab("Ajustes"))
@@ -440,7 +445,9 @@ class MainWindow(ctk.CTk):
             ctk.CTkLabel(fila, text=f"x {z.x:.3f}  y {z.y:.3f}\n{z.w:.3f} × {z.h:.3f}",
                          text_color="gray65", justify="left").pack(side="left", padx=4)
             ctk.CTkButton(fila, text="🗑", width=32, fg_color="#8a3b3b",
-                          command=lambda n=z.name: self._delete_zone(n)).pack(side="right", padx=6)
+                          command=lambda n=z.name: self._delete_zone(n)).pack(side="right", padx=(2, 6))
+            ctk.CTkButton(fila, text="✏", width=32, fg_color="#3a3a3a",
+                          command=lambda n=z.name: self._rename("zona", n)).pack(side="right", padx=2)
             var = tk.StringVar(value="" if z.tolerance is None else str(z.tolerance))
             e = ctk.CTkEntry(fila, textvariable=var, width=70, placeholder_text="global")
             e.pack(side="right", padx=4)
@@ -468,7 +475,9 @@ class MainWindow(ctk.CTk):
             ctk.CTkLabel(fila, text=f"{nombre}\n{ref_txt}", justify="left", anchor="w"
                          ).pack(side="left", padx=6)
             ctk.CTkButton(fila, text="🗑", width=32, fg_color="#8a3b3b",
-                          command=lambda n=nombre: self._delete_template(n)).pack(side="right", padx=6)
+                          command=lambda n=nombre: self._delete_template(n)).pack(side="right", padx=(2, 6))
+            ctk.CTkButton(fila, text="✏", width=32, fg_color="#3a3a3a",
+                          command=lambda n=nombre: self._rename("plantilla", n)).pack(side="right", padx=2)
             if nombre in plantillas_usadas:
                 ctk.CTkLabel(fila, text="en uso", text_color="#59C059").pack(side="right", padx=8)
         self._refresh_header()
@@ -488,6 +497,27 @@ class MainWindow(ctk.CTk):
         if nueva != zonas[i]:
             zonas[i] = nueva
             self._mark_dirty()
+
+    def _rename(self, tipo: str, viejo: str, nuevo: str | None = None) -> bool:
+        """Renombra una zona o plantilla y actualiza todas las reglas que la usan."""
+        if nuevo is None:
+            nuevo = ctk.CTkInputDialog(title="Renombrar",
+                                       text=f"Nuevo nombre para {tipo} {viejo!r}:").get_input()
+        if nuevo is None or not nuevo.strip() or nuevo.strip() == viejo:
+            return False
+        flow = self.task.flow
+        try:
+            if tipo == "zona":
+                nuevo = flow.rename_zone(viejo, nuevo)
+            else:
+                nuevo = flow.rename_template(viejo, nuevo)
+                self.engine.templates.remove(viejo)  # se recarga con el nombre nuevo al dar Play
+        except ValueError as exc:
+            messagebox.showerror("Renombrar", str(exc), parent=self)
+            return False
+        self._log(f"{tipo.capitalize()} renombrada: {viejo} → {nuevo}")
+        self._after_assets_change()
+        return True
 
     def _delete_zone(self, nombre: str) -> None:
         if nombre in self.task.flow.requirements() and not messagebox.askyesno(
@@ -587,6 +617,48 @@ class MainWindow(ctk.CTk):
         self.engine.panic()          # inmediato, desde el hilo de pynput
         self._ui_queue.put("panic")  # aviso para la GUI
 
+    # ------------------------------ macros ------------------------------ #
+    def _record_macro(self) -> None:
+        if self._recorder is not None or not self._require_idle("Grabar macro"):
+            return
+        win = self._target_rect()
+        if win is None:
+            return
+        if not messagebox.askokcancel(
+                "Grabar macro",
+                "El panel se minimizará y se grabarán tus clics, la rueda del ratón y el "
+                "teclado (posiciones relativas a la ventana objetivo).\n\n"
+                "Pulsa F10 para terminar.", parent=self):
+            return
+        self._recorder = MacroRecorder(win, on_stop=lambda: self._ui_queue.put("macro_stop"))
+        self.iconify()
+        self.after(400, self._recorder.start)  # no grabar el clic en "Aceptar"
+        self._log("⏺ Grabando macro… (F10 para terminar)")
+
+    def _finish_macro(self) -> None:
+        rec, self._recorder = self._recorder, None
+        if rec is None:
+            return
+        macro = rec.stop()
+        self.deiconify()
+        self.lift()
+        if not macro.events:
+            self._log("Macro vacía: no se guardó nada")
+            return
+        ruta = filedialog.asksaveasfilename(
+            parent=self, title="Guardar macro", initialdir=self.macros_dir,
+            initialfile="macro.macro", defaultextension=".macro", filetypes=[("Macro", "*.macro")])
+        if not ruta:
+            self._log("Macro descartada")
+            return
+        try:
+            macro.save(ruta)
+        except (OSError, MacroError) as exc:
+            messagebox.showerror("Guardar macro", str(exc), parent=self)
+            return
+        self._log(f"Macro guardada: {ruta} ({len(macro.events)} eventos, {macro.duration:.1f} s). "
+                  "Úsala con la acción 'Reproducir macro'.")
+
     def _recalibrate(self) -> None:
         self.engine.recalibrate()
         if not self.engine.is_alive():
@@ -601,8 +673,10 @@ class MainWindow(ctk.CTk):
                 self._handle_event(ev)
             while True:
                 orden = self._ui_queue.get_nowait()
-                if orden == "toggle":
+                if orden == "toggle" and self._recorder is None:  # no arrancar mientras se graba
                     self._play()
+                elif orden == "macro_stop":
+                    self._finish_macro()
                 elif orden == "panic":
                     self._log("⛔ Pánico activado por hotkey")
         except queue.Empty:
@@ -680,6 +754,8 @@ class MainWindow(ctk.CTk):
         if not self._confirm_discard():
             return
         self.hotkeys.stop()
+        if self._recorder is not None:
+            self._recorder.stop()
         self.engine.stop(timeout=2.0)
         self.destroy()
         gc.enable()

@@ -135,7 +135,7 @@ class Engine:
         self.events: queue.Queue[EngineEvent] = queue.Queue(maxsize=self.config.event_queue_size)
 
         self._flow = flow
-        self._runner: ActionRunner = action_runner or DefaultActionRunner()
+        self._runner: ActionRunner = action_runner or DefaultActionRunner(self.config.base_dir)
         self._state = EngineState.IDLE
         self._lock = threading.RLock()
         self._stop_event = threading.Event()

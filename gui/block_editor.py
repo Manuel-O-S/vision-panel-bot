@@ -20,7 +20,8 @@ import copy
 import tkinter as tk
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from tkinter import messagebox, ttk
+from pathlib import Path
+from tkinter import filedialog, messagebox, ttk
 from typing import Any
 
 import customtkinter as ctk
@@ -329,6 +330,7 @@ ACTION_LABELS = {
     "tecla": "Pulsar tecla",
     "texto": "Escribir texto",
     "esperar": "Esperar",
+    "macro": "Reproducir macro",
     "exe": "Ejecutable (.exe)",
 }
 _LABEL_TO_TYPE = {v: k for k, v in ACTION_LABELS.items()}
@@ -337,14 +339,16 @@ ACTION_DEFAULTS: dict[str, dict[str, Any]] = {
     "tecla": {"tipo": "tecla", "tecla": "space"},
     "texto": {"tipo": "texto", "texto": ""},
     "esperar": {"tipo": "esperar", "min": 0.2, "max": 0.5},
+    "macro": {"tipo": "macro", "archivo": "", "velocidad": 1.0},
     "exe": {"tipo": "exe", "ruta": ""},
 }
 
 
 class ActionsEditor(ctk.CTkFrame):
     def __init__(self, master: Any, rule: Rule, zones: list[str], templates: list[str],
-                 on_change: Callable[[], None]) -> None:
+                 on_change: Callable[[], None], base_dir: Path | None = None) -> None:
         super().__init__(master, fg_color="transparent")
+        self.base_dir = base_dir or Path.cwd()
         self.rule = rule
         self.zones = zones
         self.templates = templates
@@ -406,6 +410,15 @@ class ActionsEditor(ctk.CTkFrame):
         elif t == "esperar":
             _range_fields(fila, "", (float(a.get("min", 0)), float(a.get("max", 0))),
                           lambda r: (a.update(min=r[0], max=r[1]), self.on_change())).pack(side="left", padx=4)
+        elif t == "macro":
+            archivo = _entry(fila, a.get("archivo", ""), _parse_name, setter("archivo"), width=230,
+                             placeholder="macros/mi_macro.macro")
+            archivo.pack(side="left", padx=4)
+            ctk.CTkButton(fila, text="…", width=30, fg_color="#3a3a3a",
+                          command=lambda: self._pick_macro(archivo)).pack(side="left")
+            ctk.CTkLabel(fila, text="velocidad").pack(side="left", padx=(8, 2))
+            _entry(fila, a.get("velocidad", 1.0), _float_in(0.1, 10), setter("velocidad"),
+                   width=52).pack(side="left")
         elif t == "exe":
             _entry(fila, a.get("ruta", ""), str, setter("ruta"), width=220,
                    placeholder="C:/ruta/programa.exe").pack(side="left", padx=4)
@@ -416,6 +429,20 @@ class ActionsEditor(ctk.CTkFrame):
                            ("↑", lambda: self._move(i, -1))):
             ctk.CTkButton(fila, text=texto, width=28, fg_color="transparent",
                           command=cmd).pack(side="right", padx=1)
+
+    def _pick_macro(self, entry: ctk.CTkEntry) -> None:
+        carpeta = self.base_dir / "macros"
+        ruta = filedialog.askopenfilename(parent=self, title="Elegir macro",
+                                          initialdir=carpeta if carpeta.is_dir() else self.base_dir,
+                                          filetypes=[("Macro", "*.macro"), ("Todos", "*.*")])
+        if not ruta:
+            return
+        p = Path(ruta)
+        try:
+            p = p.resolve().relative_to(self.base_dir.resolve())
+        except ValueError:
+            pass
+        entry._var.set(p.as_posix())  # type: ignore[attr-defined]  # dispara la validación
 
     def _add(self) -> None:
         self.rule.actions.append(copy.deepcopy(ACTION_DEFAULTS["click"]))
@@ -445,9 +472,10 @@ class ActionsEditor(ctk.CTkFrame):
 # Editor completo
 # =========================================================================== #
 class FlowEditor(ctk.CTkFrame):
-    def __init__(self, master: Any, on_change: Callable[[], None]) -> None:
+    def __init__(self, master: Any, on_change: Callable[[], None], base_dir: Path | None = None) -> None:
         super().__init__(master, fg_color="transparent")
         self.on_change = on_change
+        self.base_dir = base_dir or Path.cwd()
         self.flow: Flow | None = None
         self._nodes: dict[str, tuple[Any, list[Any]]] = {}  # iid -> (objeto, lista contenedora)
         self._current: str | None = None
@@ -767,4 +795,5 @@ class FlowEditor(ctk.CTkFrame):
         ConditionBuilder(c, rule, self.zones, self.templates, self._changed).pack(fill="x", padx=8, pady=8)
 
         a = _section(self.panel, "ENTONCES  (acciones, en orden)", COLOR_RULE)
-        ActionsEditor(a, rule, self.zones, self.templates, self._changed).pack(fill="x", padx=8, pady=8)
+        ActionsEditor(a, rule, self.zones, self.templates, self._changed,
+                      base_dir=self.base_dir).pack(fill="x", padx=8, pady=8)

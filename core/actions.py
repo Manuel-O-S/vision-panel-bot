@@ -9,6 +9,7 @@ Una acción es un dict serializable (va tal cual en el .tarea):
     {"tipo": "tecla",   "tecla": "space"}
     {"tipo": "texto",   "texto": "hola"}
     {"tipo": "esperar", "min": 0.2, "max": 0.6}                         # delay entrópico
+    {"tipo": "macro",   "archivo": "macros/login.macro", "velocidad": 1.0}  # macro grabada
     {"tipo": "exe",     "ruta": "C:/ruta/programa.exe"}                 # reservado (V2)
 
 El motor llama a ``runner(accion, contexto)`` desde su hilo de trabajo. Se
@@ -21,6 +22,7 @@ import logging
 import threading
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from core.entropy import dormir_entropico
@@ -85,12 +87,14 @@ def resolve_point(action: Mapping[str, Any], ctx: ActionContext) -> tuple[int, i
 class DefaultActionRunner:
     """Ejecuta acciones con ``core.input_sim`` (SendInput vía pydirectinput)."""
 
-    def __init__(self) -> None:
+    def __init__(self, base_dir: str | Path | None = None) -> None:
+        self.base_dir = Path(base_dir) if base_dir else Path.cwd()  # raíz de rutas relativas
         self._handlers: dict[str, Callable[[Mapping[str, Any], ActionContext], None]] = {
             "click": self._click,
             "tecla": self._key,
             "texto": self._text,
             "esperar": self._wait,
+            "macro": self._macro,
             "exe": self._exe,
         }
 
@@ -128,6 +132,17 @@ class DefaultActionRunner:
 
     def _wait(self, action: Mapping[str, Any], ctx: ActionContext) -> None:
         dormir_entropico(float(action.get("min", 0.0)), float(action.get("max", 0.0)), ctx.stop_event)
+
+    def _macro(self, action: Mapping[str, Any], ctx: ActionContext) -> None:
+        from actions.macro_recorder import Macro, play_macro
+        archivo = action.get("archivo")
+        if not archivo:
+            raise ActionError("Acción 'macro' sin 'archivo'")
+        ruta = Path(archivo)
+        if not ruta.is_absolute():
+            ruta = self.base_dir / ruta
+        macro = Macro.load(ruta)
+        play_macro(macro, ctx.window, ctx.stop_event, speed=float(action.get("velocidad", 1.0)))
 
     def _exe(self, action: Mapping[str, Any], ctx: ActionContext) -> None:
         # Contenedor reservado para acciones basadas en ejecutables externos.

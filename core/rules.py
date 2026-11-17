@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import re
 from abc import ABC, abstractmethod
+from dataclasses import replace as dc_replace
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
 from enum import Enum
@@ -41,7 +42,8 @@ from core.geometry import RelativeZone
 
 __all__ = [
     "BASELINE", "ZoneObservation", "Condition", "ZoneIs", "And", "Or", "Not",
-    "parse_condition", "parse_expression", "condition_to_text", "ConditionSyntaxError",
+    "parse_condition", "parse_expression", "condition_to_text", "rename_in_condition",
+    "ConditionSyntaxError",
     "Trigger", "Rule", "Process", "Loop", "TemplateRef", "Flow",
 ]
 
@@ -399,6 +401,20 @@ def condition_to_text(cond: Condition) -> str:
     raise TypeError(f"Condición desconocida: {cond!r}")
 
 
+def rename_in_condition(cond: Condition, zones: Mapping[str, str] | None = None,
+                        templates: Mapping[str, str] | None = None) -> Condition:
+    """Devuelve una copia de la condición con zonas/plantillas renombradas."""
+    zones, templates = zones or {}, templates or {}
+    if isinstance(cond, ZoneIs):
+        return ZoneIs(zones.get(cond.zone, cond.zone),
+                      templates.get(cond.target, cond.target), cond.threshold)
+    if isinstance(cond, Not):
+        return Not(rename_in_condition(cond.item, zones, templates))
+    if isinstance(cond, (And, Or)):
+        return type(cond)(tuple(rename_in_condition(c, zones, templates) for c in cond.items))
+    raise TypeError(f"Condición desconocida: {cond!r}")
+
+
 # --------------------------------------------------------------------------- #
 # Reglas, procesos y loops
 # --------------------------------------------------------------------------- #
@@ -616,6 +632,48 @@ class Flow:
     def reset(self) -> None:
         for loop in self.loops:
             loop.reset()
+
+    # ------------------------------ renombrar ------------------------------ #
+    @staticmethod
+    def _check_new_name(new: str, existentes: set[str]) -> str:
+        new = new.strip()
+        if not new:
+            raise ValueError("El nombre no puede estar vacío")
+        if normalize_target(new) == BASELINE:
+            raise ValueError(f"{new!r} está reservado para el Baseline")
+        if new in existentes:
+            raise ValueError(f"Ya existe {new!r}")
+        return new
+
+    def rename_zone(self, old: str, new: str) -> str:
+        """Renombra una zona y actualiza condiciones y acciones que la usan."""
+        if self.zone(old) is None:
+            raise ValueError(f"La zona {old!r} no existe")
+        if new.strip() == old:
+            return old
+        new = self._check_new_name(new, {z.name for z in self.zones})
+        self.zones = [dc_replace(z, name=new) if z.name == old else z for z in self.zones]
+        for regla in self.iter_rules():
+            regla.condition = rename_in_condition(regla.condition, zones={old: new})
+            for accion in regla.actions:
+                if accion.get("zona") == old:
+                    accion["zona"] = new
+        return new
+
+    def rename_template(self, old: str, new: str) -> str:
+        """Renombra una plantilla (el archivo en disco no cambia)."""
+        if old not in self.templates:
+            raise ValueError(f"La plantilla {old!r} no existe")
+        if new.strip() == old:
+            return old
+        new = self._check_new_name(new, set(self.templates))
+        self.templates = {(new if k == old else k): v for k, v in self.templates.items()}
+        for regla in self.iter_rules():
+            regla.condition = rename_in_condition(regla.condition, templates={old: new})
+            for accion in regla.actions:
+                if accion.get("plantilla") == old:
+                    accion["plantilla"] = new
+        return new
 
     def to_dict(self) -> dict[str, Any]:
         return {
