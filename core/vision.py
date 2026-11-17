@@ -34,7 +34,7 @@ from core.geometry import Rect
 log = logging.getLogger(__name__)
 
 __all__ = [
-    "WindowLocator", "ScreenCapture", "PreprocessMode", "PreprocessConfig",
+    "WindowLocator", "ScreenCapture", "list_windows", "primary_screen", "grab_screen", "PreprocessMode", "PreprocessConfig",
     "preprocess", "to_gray", "read_image", "Template", "TemplateLibrary",
     "MatchResult", "match_template", "baseline_signature", "baseline_delta",
     "crop",
@@ -150,12 +150,36 @@ class WindowLocator:
         return None
 
 
+def list_windows() -> list[str]:
+    """Títulos de las ventanas visibles con título (para elegir la ventana objetivo)."""
+    if not _IS_WINDOWS:
+        return []
+    propio = os.getpid()
+    titulos: list[str] = []
+
+    @_EnumWindowsProc
+    def _cb(hwnd: int, _lparam: int) -> bool:
+        if _user32.IsWindowVisible(hwnd) and _window_pid(hwnd) != propio:
+            t = _window_title(hwnd).strip()
+            if t and t not in titulos:
+                titulos.append(t)
+        return True
+
+    _user32.EnumWindows(_cb, 0)
+    return sorted(titulos, key=str.casefold)
+
+
+def _new_mss():  # noqa: ANN202
+    """mss >= 10 expone ``mss.MSS``; ``mss.mss`` queda obsoleto."""
+    import mss
+    return mss.MSS() if hasattr(mss, "MSS") else mss.mss()
+
+
 def primary_screen() -> Rect:
     """Rect de la pantalla principal en píxeles físicos (requiere DPI awareness)."""
     if _IS_WINDOWS:
         return Rect(0, 0, _user32.GetSystemMetrics(0), _user32.GetSystemMetrics(1))
-    import mss
-    with mss.mss() as sct:
+    with _new_mss() as sct:
         m = sct.monitors[1]
         return Rect(m["left"], m["top"], m["width"], m["height"])
 
@@ -194,8 +218,7 @@ class ScreenCapture:
                 log.warning("dxcam no disponible (%s); usando mss", exc)
                 self._dx = None
 
-        import mss  # siempre disponible como respaldo
-        self._mss = mss.mss()
+        self._mss = _new_mss()  # siempre disponible como respaldo
         v = self._mss.monitors[0]
         self.bounds = Rect(v["left"], v["top"], v["width"], v["height"])
         log.info("Captura: %s", self.backend)
@@ -260,6 +283,14 @@ class ScreenCapture:
 
     def __exit__(self, *_exc: object) -> None:
         self.close()
+
+
+def grab_screen() -> tuple[np.ndarray, Rect]:
+    """Captura única del escritorio virtual completo (para el Snipping Tool)."""
+    with _new_mss() as sct:
+        v = sct.monitors[0]
+        img = cv2.cvtColor(np.asarray(sct.grab(v)), cv2.COLOR_BGRA2BGR)
+    return img, Rect(v["left"], v["top"], v["width"], v["height"])
 
 
 def crop(frame: np.ndarray, frame_rect: Rect, target: Rect) -> np.ndarray | None:

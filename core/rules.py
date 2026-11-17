@@ -41,7 +41,7 @@ from core.geometry import RelativeZone
 
 __all__ = [
     "BASELINE", "ZoneObservation", "Condition", "ZoneIs", "And", "Or", "Not",
-    "parse_condition", "parse_expression", "ConditionSyntaxError",
+    "parse_condition", "parse_expression", "condition_to_text", "ConditionSyntaxError",
     "Trigger", "Rule", "Process", "Loop", "TemplateRef", "Flow",
 ]
 
@@ -368,6 +368,35 @@ def parse_expression(text: str) -> Condition:
     if not condicion.strip():
         raise ConditionSyntaxError("Expresión vacía")
     return _Parser(condicion).parse()
+
+
+def _quote(name: str) -> str:
+    """Pone comillas si el nombre contiene palabras reservadas o símbolos."""
+    palabras = name.split()
+    if (not palabras or any(p.casefold() in _KEYWORDS for p in palabras)
+            or re.search(r"[()\"'=!&|]", name)):
+        return '"' + name.replace('"', "'") + '"'
+    return name
+
+
+def condition_to_text(cond: Condition) -> str:
+    """Representación legible y re-parseable con ``parse_expression``."""
+    if isinstance(cond, ZoneIs):
+        objetivo = "Baseline" if cond.target == BASELINE else _quote(cond.target)
+        return f"{_quote(cond.zone)} == {objetivo}"
+    if isinstance(cond, Not):
+        inner = cond.item
+        if isinstance(inner, ZoneIs):
+            return condition_to_text(inner).replace(" == ", " != ", 1)
+        return f"NOT ({condition_to_text(inner)})"
+    if isinstance(cond, (And, Or)):
+        sep = " Y " if isinstance(cond, And) else " O "
+        partes = []
+        for c in cond.items:
+            t = condition_to_text(c)
+            partes.append(f"({t})" if isinstance(c, (And, Or)) else t)
+        return sep.join(partes)
+    raise TypeError(f"Condición desconocida: {cond!r}")
 
 
 # --------------------------------------------------------------------------- #
