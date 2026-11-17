@@ -15,6 +15,8 @@ Modular Computer Vision Automation Panel & Workflow Engine built with Python and
 ## Estructura
 ```
 core/        engine.py · vision.py · entropy.py · input_sim.py
+             geometry.py (zonas relativas) · rules.py (Y/O/NOT, flanco, loops) · actions.py
+tests/       python -m unittest discover -s tests -v
 gui/         main_window.py · snipping_tool.py · block_editor.py
 workflows/   task_manager.py
 actions/     macro_recorder.py · custom_scripts/
