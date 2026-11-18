@@ -34,6 +34,12 @@ def click(x: int, y: int, button: str = "left", jitter_px: float = 2.0) -> None:
     pydirectinput.click(button=button)
 
 
+def click_here(button: str = "left") -> None:
+    """Clic en la posición ACTUAL del ratón (no lo mueve)."""
+    human_delay()
+    pydirectinput.click(button=button)
+
+
 def press(key: str) -> None:
     pydirectinput.keyDown(key)
     human_delay(0.06, 0.015)

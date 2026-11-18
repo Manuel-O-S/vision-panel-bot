@@ -155,6 +155,7 @@ class Engine:
         self._reqs: dict[str, set[str]] = {}
         self._window_lost = False
         self._last_obs_emit = 0.0
+        self._best_scores: dict[tuple[str, str], float] = {}  # (zona, plantilla) -> máx. de la ejecución
 
     # =============================== estado =============================== #
     @property
@@ -282,7 +283,7 @@ class Engine:
         if threading.current_thread() is t:
             return False  # el hilo no puede esperarse a sí mismo
         t.join(timeout)
-        if t.is_alive():
+        if t.is_alive() and timeout:  # timeout=0 (GUI): no esperar es lo normal, no un fallo
             log.warning("El hilo del motor no terminó en %.1fs", timeout)
             return False
         return True
@@ -360,6 +361,7 @@ class Engine:
             self._locator = WindowLocator(self.config.window_title)
             self._reqs = flow.requirements()
             self._window_lost = False
+            self._best_scores = {}
             self._emit(EventType.LOG, f"Tarea {flow.name!r} iniciada ({self._capture.backend})")
             completado = all(self._run_loop(flow, loop) for loop in flow.loops)
         except Exception as exc:  # noqa: BLE001 - el hilo nunca debe morir en silencio
@@ -369,8 +371,19 @@ class Engine:
             if self._capture is not None:
                 self._capture.close()
                 self._capture = None
+            self._emit_best_scores()
             self._emit(EventType.FINISHED, {"completado": completado})
             self._set_state(EngineState.IDLE)
+
+    def _emit_best_scores(self) -> None:
+        """Resumen al terminar: ayuda a elegir el umbral sin mirar el monitor en vivo."""
+        umbral = self.config.match_threshold
+        for (zona, t), score in sorted(self._best_scores.items()):
+            nota = "✔ llegó al umbral" if score >= umbral else "✖ nunca llegó al umbral"
+            if score == 0.0:
+                nota += " — la zona sólo vio un color plano (¿tapada por otra ventana?)"
+            self._emit(EventType.LOG, f"Mejor parecido {zona} › {t}: {score:.3f} "
+                                      f"(umbral {umbral:.2f}) {nota}")
 
     def _checkpoint(self) -> bool:
         """Bloquea mientras esté en pausa. False => hay que salir."""
@@ -400,9 +413,14 @@ class Engine:
                     break
                 disparadas = proc.evaluate(snap.observations, self.config.match_threshold)
                 for regla in disparadas:
+                    if regla.is_retry:
+                        self._emit(EventType.LOG, f"↻ '{regla.name}': su condición sigue igual tras "
+                                                  f"{regla.retry:g} s; se reintenta")
                     self._emit(EventType.RULE_FIRED,
                                {"loop": loop.name, "proceso": proc.name, "regla": regla.name})
-                    if not self._fire(flow, regla, snap):
+                    ok = self._fire(flow, regla, snap)
+                    regla.mark_done()
+                    if not ok:
                         return False
                 if disparadas:
                     # La pantalla cambió: los procesos siguientes ven un frame nuevo.
@@ -511,6 +529,9 @@ class Engine:
                     continue
                 m = match_template(procesada, tpl)
                 o.scores[t] = m.score
+                clave = (nombre, t)
+                if m.score > self._best_scores.get(clave, -2.0):
+                    self._best_scores[clave] = m.score
                 o.locations[t] = (origen.left + m.x, origen.top + m.y, m.w, m.h)
         return o
 

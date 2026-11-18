@@ -6,6 +6,7 @@ Una acción es un dict serializable (va tal cual en el .tarea):
     {"tipo": "click",   "zona": "Zona 1", "x": 0.5, "y": 0.5, "boton": "left", "jitter": 2}
     {"tipo": "click",   "zona": "Zona 2", "plantilla": "Plantilla B"}   # centro del match
     {"tipo": "click",   "x": 0.25, "y": 0.80}                           # relativo a la ventana
+    {"tipo": "click",   "raton": True}            # donde esté el ratón (no lo mueve)
     {"tipo": "mantener",  "zona": "Zona 1", "boton": "left", "min": 0.5, "max": 1.0}  # mantener pulsado
     {"tipo": "autoclick", "zona": "Zona 1", "boton": "right", "cps": 10, "min": 2, "max": 3}
     {"tipo": "tecla",   "tecla": "space"}
@@ -170,24 +171,40 @@ class DefaultActionRunner:
             raise ActionError(f"Rango de duración inválido: mín {a} / máx {b}")
         return a, b
 
-    def _click(self, action: Mapping[str, Any], ctx: ActionContext) -> None:
+    def _aim(self, action: Mapping[str, Any], ctx: ActionContext) -> str:
+        """Lleva el ratón al punto de la acción, salvo con ``"raton": True`` (se queda donde está).
+
+        Devuelve dónde actuó, para el registro.
+        """
+        if action.get("raton"):
+            return "donde está el ratón"
         x, y = resolve_point(action, ctx)
+        entrada = self._input()
+        entrada.move(x, y, float(action.get("jitter", 2.0)))
+        entrada.human_delay()
+        return f"en ({x}, {y})"
+
+    def _click(self, action: Mapping[str, Any], ctx: ActionContext) -> None:
         boton = self._button(action)
+        if action.get("raton"):
+            self._input().click_here(boton)
+            return
+        x, y = resolve_point(action, ctx)
         self._input().click(x, y, button=boton, jitter_px=float(action.get("jitter", 2.0)))
 
     def _hold(self, action: Mapping[str, Any], ctx: ActionContext) -> None:
         """Mantiene pulsado el botón un tiempo entrópico entre ``min`` y ``max`` segundos."""
-        x, y = resolve_point(action, ctx)
         boton = self._button(action)
         lo, hi = self._range(action, 0.5, 1.0)
+        donde = self._aim(action, ctx)
         entrada = self._input()
-        entrada.move(x, y, float(action.get("jitter", 2.0)))
-        entrada.human_delay()
+        inicio = time.perf_counter()
         entrada.button_down(boton)
         try:
             dormir_entropico(lo, hi, ctx.stop_event)  # el pánico lo corta al instante
         finally:
             entrada.button_up(boton)  # nunca dejar el botón pegado
+        ctx.log(f"Mantener {boton} {time.perf_counter() - inicio:.2f} s {donde}")
 
     def _autoclick(self, action: Mapping[str, Any], ctx: ActionContext) -> None:
         """Ráfaga de clics a ~``cps`` por segundo durante ``min``-``max`` segundos.
@@ -195,7 +212,6 @@ class DefaultActionRunner:
         Cada intervalo y cada pulsación son entrópicos (±30 % alrededor de 1/cps),
         así que el ritmo medio es ``cps`` pero nunca hay dos clics iguales.
         """
-        x, y = resolve_point(action, ctx)
         boton = self._button(action)
         cps = float(action.get("cps", 10))
         if not 0 < cps <= MAX_CPS:
@@ -203,9 +219,8 @@ class DefaultActionRunner:
         lo, hi = self._range(action, 1.0, 2.0)
         duracion = generar_delay_entropico(lo, hi)
         base = 1.0 / cps
+        donde = self._aim(action, ctx)
         entrada = self._input()
-        entrada.move(x, y, float(action.get("jitter", 2.0)))
-        entrada.human_delay()
 
         clics = 0
         inicio = proximo = time.perf_counter()
@@ -226,7 +241,7 @@ class DefaultActionRunner:
             else:
                 proximo = time.perf_counter()  # si vamos tarde, no "recuperar" con ráfagas
         real = time.perf_counter() - inicio
-        ctx.log(f"Autoclick {boton}: {clics} clics en {real:.2f} s (~{clics / real if real else 0:.1f} cps)")
+        ctx.log(f"Autoclick {boton}: {clics} clics en {real:.2f} s (~{clics / real if real else 0:.1f} cps) {donde}")
 
     def _key(self, action: Mapping[str, Any], ctx: ActionContext) -> None:
         tecla = action.get("tecla")

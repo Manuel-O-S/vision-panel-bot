@@ -31,6 +31,7 @@ y este módulo sólo decide.
 from __future__ import annotations
 
 import re
+import time
 from abc import ABC, abstractmethod
 from dataclasses import replace as dc_replace
 from collections.abc import Callable, Iterator, Mapping
@@ -446,26 +447,43 @@ class Rule:
     delay: tuple[float, float] = (0.0, 0.0)
     trigger: Trigger = Trigger.EDGE
     enabled: bool = True
+    # Sólo flanco: si la condición SIGUE verdadera ``retry`` s después de terminar
+    # las acciones, se asume que no funcionaron y se vuelve a disparar (0 = nunca).
+    retry: float = 0.0
     _last: bool = field(default=False, init=False, repr=False, compare=False)
+    _done_at: float = field(default=0.0, init=False, repr=False, compare=False)
+    is_retry: bool = field(default=False, init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         self.delay = parse_range(self.delay)
         self.trigger = Trigger(self.trigger)
+        self.retry = max(0.0, float(self.retry or 0.0))
 
-    def check(self, obs: Observations, default_threshold: float) -> bool:
+    def check(self, obs: Observations, default_threshold: float, now: float | None = None) -> bool:
         """Evalúa la condición y actualiza el estado de flanco. True = disparar."""
         if not self.enabled:
             return False
+        now = time.monotonic() if now is None else now
         actual = self.condition.evaluate(obs, default_threshold)
-        disparar = actual and (self.trigger is Trigger.LEVEL or not self._last)
+        reintento = (actual and self._last and self.trigger is Trigger.EDGE
+                     and self.retry > 0 and now - self._done_at >= self.retry)
+        disparar = actual and (self.trigger is Trigger.LEVEL or not self._last or reintento)
         self._last = actual
+        if disparar:
+            self.is_retry = reintento
+            self._done_at = now  # se actualiza otra vez al terminar las acciones
         return disparar
+
+    def mark_done(self, now: float | None = None) -> None:
+        """Las acciones terminaron: la cuenta del reintento empieza ahora."""
+        self._done_at = time.monotonic() if now is None else now
 
     def reset(self) -> None:
         self._last = False
+        self.is_retry = False
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        d = {
             "nombre": self.name,
             "condicion": self.condition.to_dict(),
             "acciones": list(self.actions),
@@ -473,6 +491,9 @@ class Rule:
             "disparo": self.trigger.value,
             "activa": self.enabled,
         }
+        if self.retry > 0:
+            d["reintentar"] = self.retry
+        return d
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> Rule:
@@ -483,6 +504,7 @@ class Rule:
             delay=parse_range(data.get("delay")),
             trigger=Trigger(data.get("disparo", Trigger.EDGE.value)),
             enabled=bool(data.get("activa", True)),
+            retry=float(data.get("reintentar", 0) or 0),
         )
 
 

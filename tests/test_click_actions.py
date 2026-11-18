@@ -154,3 +154,94 @@ class TestAvisoVentana(unittest.TestCase):
         avisos = flow_warnings(f, info, current_size=(1360, 697))
         self.assertEqual(len(avisos), 1)
         self.assertIn("1360×697", avisos[0])
+
+
+class TestResumenPuntuaciones(unittest.TestCase):
+    def test_resumen_al_terminar(self):
+        from core.engine import Engine, EngineConfig, EventType
+        e = Engine(EngineConfig(match_threshold=0.8))
+        e._best_scores = {("Zona 2", "P"): 0.0, ("Zona 1", "Q"): 0.91}
+        e._emit_best_scores()
+        logs = [ev.payload for ev in e.poll_events(10) if ev.type is EventType.LOG]
+        self.assertEqual(len(logs), 2)
+        self.assertIn("0.910", logs[0])
+        self.assertIn("✔", logs[0])
+        self.assertIn("plano", logs[1])
+
+
+class TestDondeEsteElRaton(unittest.TestCase):
+    def test_no_mueve_el_puntero(self):
+        for tipo in ("mantener", "autoclick"):
+            m = FakeMouse()
+            FakeRunner(m)({"tipo": tipo, "raton": True, "min": 0.05, "max": 0.05}, ctx())
+            self.assertIsNone(m.pos, tipo)
+            self.assertTrue(m.events and m.events[-1][0] == "up")
+
+    def test_editor_opcion_raton(self):
+        import copy
+        import customtkinter as ctk
+        from gui.block_editor import ACTION_DEFAULTS, MOUSE_LABEL, ActionsEditor
+        root = ctk.CTk()
+        root.withdraw()
+        try:
+            acts = [copy.deepcopy(ACTION_DEFAULTS["mantener"])]
+            ed = ActionsEditor(root, acts, ["Zona 1"], ["P"], lambda: None)
+            fila = ed.list.winfo_children()[0]
+            menu = [w for w in fila.winfo_children() if isinstance(w, ctk.CTkOptionMenu)][1]
+            menu._command(MOUSE_LABEL)
+            self.assertTrue(acts[0]["raton"])
+            self.assertIsNone(acts[0]["zona"])
+        finally:
+            root.destroy()
+
+
+class TestReintentar(unittest.TestCase):
+    """Flanco con 'reintentar': si la acción no cambió nada, se vuelve a disparar."""
+
+    class Cond:
+        def __init__(self) -> None:
+            self.valor = True
+
+        def evaluate(self, obs, thr):
+            return self.valor
+
+        def to_dict(self):
+            return {"zona": "Zona 1", "es": "baseline"}
+
+    def test_reintenta_si_sigue_verdadera(self):
+        from core.rules import Rule
+        c = self.Cond()
+        r = Rule("Lanzar", c, retry=20)
+        self.assertTrue(r.check({}, 0.9, now=0))
+        self.assertFalse(r.is_retry)
+        r.mark_done(now=8)                       # las acciones terminaron en t=8
+        self.assertFalse(r.check({}, 0.9, now=20))  # sólo 12 s desde el final
+        self.assertTrue(r.check({}, 0.9, now=28.5))  # 20 s sin cambios: reintento
+        self.assertTrue(r.is_retry)
+        r.mark_done(now=30)
+        c.valor = False                           # funcionó: la condición cambió
+        self.assertFalse(r.check({}, 0.9, now=60))
+        c.valor = True                            # vuelve a ser verdadera: flanco normal
+        self.assertTrue(r.check({}, 0.9, now=61))
+        self.assertFalse(r.is_retry)
+
+    def test_sin_reintento_por_defecto_y_guardado(self):
+        from core.rules import Rule
+        r = Rule("Lanzar", self.Cond())
+        self.assertTrue(r.check({}, 0.9, now=0))
+        self.assertFalse(r.check({}, 0.9, now=10_000))
+        self.assertNotIn("reintentar", r.to_dict())
+        r.retry = 25
+        self.assertEqual(r.to_dict()["reintentar"], 25)
+
+    def test_carga_desde_tarea(self):
+        from core.rules import Rule
+        r = Rule.from_dict({"nombre": "L", "condicion": {"zona": "Zona 1", "es": "baseline"},
+                            "reintentar": 30})
+        self.assertEqual(r.retry, 30.0)
+        self.assertEqual(Rule.from_dict({"nombre": "L", "condicion": {"zona": "Zona 1", "es": "baseline"}}).retry, 0.0)
+
+    def test_registro_indica_donde(self):
+        m, logs = FakeMouse(), []
+        FakeRunner(m)({"tipo": "mantener", "raton": True, "min": 0.01, "max": 0.01}, ctx(logs=logs))
+        self.assertIn("donde está el ratón", logs[-1])

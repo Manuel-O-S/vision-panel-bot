@@ -45,6 +45,7 @@ COLOR_OK_BORDER = "#565b5e"
 
 BASELINE_LABEL = "Baseline"
 WINDOW_LABEL = "(ventana completa)"
+MOUSE_LABEL = "(donde esté el ratón)"
 NO_TEMPLATE = "(ninguna)"
 
 
@@ -512,12 +513,27 @@ class ActionsEditor(ctk.CTkFrame):
 
     def _point_fields(self, fila: Any, a: dict[str, Any],
                       setter: Callable[[str], Callable[[Any], None]]) -> None:
-        """Dónde actuar: [zona][plantilla] x [..] y [..] (común a clic, mantener y autoclick)."""
-        zonas = [WINDOW_LABEL] + self.zones
-        z = ctk.CTkOptionMenu(fila, values=zonas, width=130,
-                              command=lambda v: setter("zona")(None if v == WINDOW_LABEL else v))
-        z.set(a.get("zona") or WINDOW_LABEL)
+        """Dónde actuar: [zona][plantilla] x [..] y [..] (común a clic, mantener y autoclick).
+
+        Con "(donde esté el ratón)" la acción no mueve el puntero (``"raton": True``).
+        """
+        def elegir(v: str) -> None:
+            raton = v == MOUSE_LABEL
+            if raton != bool(a.get("raton")):
+                a["raton"] = raton
+                a["zona"] = None if raton or v == WINDOW_LABEL else v
+                self._render()  # cambian los campos visibles
+                self.on_change()
+                return
+            setter("zona")(None if v in (WINDOW_LABEL, MOUSE_LABEL) else v)
+
+        zonas = [MOUSE_LABEL, WINDOW_LABEL] + self.zones
+        z = ctk.CTkOptionMenu(fila, values=zonas, width=150, command=elegir)
+        z.set(MOUSE_LABEL if a.get("raton") else (a.get("zona") or WINDOW_LABEL))
         z.pack(side="left", padx=4)
+        if a.get("raton"):
+            ctk.CTkLabel(fila, text="(no mueve el puntero)", text_color="gray60").pack(side="left", padx=4)
+            return
         plantillas = [NO_TEMPLATE] + self.templates
         p = ctk.CTkOptionMenu(fila, values=plantillas, width=130,
                               command=lambda v: setter("plantilla")(None if v == NO_TEMPLATE else v))
@@ -1205,6 +1221,14 @@ class FlowEditor(ctk.CTkFrame):
             command=lambda v: (setattr(rule, "trigger", etiquetas[v]), rule.reset(), self._changed()))
         seg.set(next(k for k, v in etiquetas.items() if v is rule.trigger))
         seg.pack(side="left")
+        fila_r = ctk.CTkFrame(f, fg_color="transparent")
+        fila_r.pack(fill="x", padx=8, pady=(4, 0))
+        ctk.CTkLabel(fila_r, text="Reintentar tras", width=110, anchor="w").pack(side="left")
+        _entry(fila_r, rule.retry, _float_in(0, 3600),
+               lambda v: (setattr(rule, "retry", float(v or 0)), self._changed()),
+               width=60).pack(side="left")
+        ctk.CTkLabel(fila_r, text="s si la condición sigue verdadera (sólo flanco; 0 = nunca)",
+                     text_color="gray60").pack(side="left", padx=6)
         _range_fields(f, "Delay antes de actuar", rule.delay,
                       lambda r: (setattr(rule, "delay", r), self._changed())).pack(anchor="w", padx=8, pady=(6, 10))
 
