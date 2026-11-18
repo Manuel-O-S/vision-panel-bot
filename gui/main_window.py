@@ -34,7 +34,7 @@ from typing import Any
 import customtkinter as ctk
 
 from actions.macro_recorder import MacroError, MacroRecorder
-from core.engine import Engine, EngineEvent, EngineState, EventType
+from core.engine import Engine, EngineEvent, EngineState, EventType, fmt_elapsed
 from core.geometry import Rect, RelativeZone
 from core.rules import BASELINE, TemplateRef, flow_warnings
 from core.vision import TemplateLibrary, WindowLocator, list_windows, primary_screen, read_image
@@ -816,7 +816,8 @@ class MainWindow(ctk.CTk):
             self._log(f"✖ {ev.payload}", ev.timestamp)
         elif t is EventType.RULE_FIRED:
             p = ev.payload
-            self._log(f"▶ {p['loop']} › {p['proceso']} › {p['regla']}", ev.timestamp)
+            cuenta = f"   [#{p['n']} · total {p['total']} · {fmt_elapsed(p['t'])}]" if "n" in p else ""
+            self._log(f"▶ {p['loop']} › {p['proceso']} › {p['regla']}{cuenta}", ev.timestamp)
         elif t is EventType.CALIBRATED:
             self._log(f"Baseline tomado: {ev.payload['zona']}", ev.timestamp)
         elif t is EventType.WINDOW_LOST:

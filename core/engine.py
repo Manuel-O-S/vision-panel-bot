@@ -33,6 +33,7 @@ import logging
 import queue
 import threading
 import time
+from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum, auto
@@ -120,6 +121,49 @@ class _Snapshot:
     observations: dict[str, ZoneObservation]
 
 
+def fmt_elapsed(segundos: float) -> str:
+    s = int(segundos)
+    return f"{s // 3600:02d}:{s % 3600 // 60:02d}:{s % 60:02d}"
+
+
+@dataclass
+class RunStats:
+    """Contadores de una ejecución: disparos por regla, reintentos, errores..."""
+
+    start: float = field(default_factory=time.monotonic)
+    fires: Counter[str] = field(default_factory=Counter)
+    retries: Counter[str] = field(default_factory=Counter)
+    errors: int = 0
+    window_lost: int = 0
+
+    @property
+    def total(self) -> int:
+        return sum(self.fires.values())
+
+    def elapsed(self) -> float:
+        return time.monotonic() - self.start
+
+    def fired(self, rule: str, retry: bool = False) -> int:
+        self.fires[rule] += 1
+        if retry:
+            self.retries[rule] += 1
+        return self.fires[rule]
+
+    def summary(self) -> str:
+        t = self.elapsed()
+        partes = []
+        for regla, n in self.fires.items():
+            txt = f"{regla} ×{n}"
+            if t >= 60:
+                txt += f" ({n / (t / 60):.1f}/min)"
+            if self.retries[regla]:
+                txt += f", {self.retries[regla]} reintentos"
+            partes.append(txt)
+        reglas = " · ".join(partes) or "ninguna regla se disparó"
+        return (f"Σ Resumen {fmt_elapsed(t)}: {reglas} | errores {self.errors}"
+                f" | ventana perdida {self.window_lost}")
+
+
 class Engine:
     """Motor de automatización. Todos los métodos públicos son thread-safe."""
 
@@ -156,6 +200,7 @@ class Engine:
         self._window_lost = False
         self._last_obs_emit = 0.0
         self._best_scores: dict[tuple[str, str], float] = {}  # (zona, plantilla) -> máx. de la ejecución
+        self.stats = RunStats()  # contadores de la ejecución actual (para el registro)
 
     # =============================== estado =============================== #
     @property
@@ -192,6 +237,10 @@ class Engine:
 
     # ============================== eventos =============================== #
     def _emit(self, kind: EventType, payload: Any = None) -> None:
+        if kind is EventType.ERROR:
+            self.stats.errors += 1
+        elif kind is EventType.WINDOW_LOST:
+            self.stats.window_lost += 1
         ev = EngineEvent(kind, payload)
         try:
             self.events.put_nowait(ev)
@@ -362,6 +411,7 @@ class Engine:
             self._reqs = flow.requirements()
             self._window_lost = False
             self._best_scores = {}
+            self.stats = RunStats()
             self._emit(EventType.LOG, f"Tarea {flow.name!r} iniciada ({self._capture.backend})")
             completado = all(self._run_loop(flow, loop) for loop in flow.loops)
         except Exception as exc:  # noqa: BLE001 - el hilo nunca debe morir en silencio
@@ -372,6 +422,7 @@ class Engine:
                 self._capture.close()
                 self._capture = None
             self._emit_best_scores()
+            self._emit(EventType.LOG, self.stats.summary())
             self._emit(EventType.FINISHED, {"completado": completado})
             self._set_state(EngineState.IDLE)
 
@@ -413,11 +464,13 @@ class Engine:
                     break
                 disparadas = proc.evaluate(snap.observations, self.config.match_threshold)
                 for regla in disparadas:
+                    n = self.stats.fired(regla.name, regla.is_retry)
                     if regla.is_retry:
                         self._emit(EventType.LOG, f"↻ '{regla.name}': su condición sigue igual tras "
                                                   f"{regla.retry:g} s; se reintenta")
                     self._emit(EventType.RULE_FIRED,
-                               {"loop": loop.name, "proceso": proc.name, "regla": regla.name})
+                               {"loop": loop.name, "proceso": proc.name, "regla": regla.name,
+                                "n": n, "total": self.stats.total, "t": self.stats.elapsed()})
                     ok = self._fire(flow, regla, snap)
                     regla.mark_done()
                     if not ok:

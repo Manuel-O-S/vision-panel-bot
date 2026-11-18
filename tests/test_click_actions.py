@@ -245,3 +245,28 @@ class TestReintentar(unittest.TestCase):
         m, logs = FakeMouse(), []
         FakeRunner(m)({"tipo": "mantener", "raton": True, "min": 0.01, "max": 0.01}, ctx(logs=logs))
         self.assertIn("donde está el ratón", logs[-1])
+
+
+class TestContador(unittest.TestCase):
+    def test_contadores_y_resumen(self):
+        from core.engine import RunStats, fmt_elapsed
+        s = RunStats(start=time.monotonic() - 125)
+        self.assertEqual(s.fired("Lanzar"), 1)
+        self.assertEqual(s.fired("Pescar"), 1)
+        self.assertEqual(s.fired("Lanzar", retry=True), 2)
+        s.errors = 1
+        self.assertEqual(s.total, 3)
+        txt = s.summary()
+        self.assertIn("00:02:05", txt)
+        self.assertIn("Lanzar ×2", txt)
+        self.assertIn("1 reintentos", txt)
+        self.assertIn("Pescar ×1", txt)
+        self.assertIn("errores 1", txt)
+        self.assertEqual(fmt_elapsed(3725), "01:02:05")
+
+    def test_motor_cuenta_errores(self):
+        from core.engine import Engine, EngineConfig, EventType
+        e = Engine(EngineConfig())
+        e._emit(EventType.ERROR, "x")
+        e._emit(EventType.WINDOW_LOST, "Roblox")
+        self.assertEqual((e.stats.errors, e.stats.window_lost), (1, 1))
