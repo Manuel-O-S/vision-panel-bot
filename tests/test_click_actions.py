@@ -142,3 +142,15 @@ class TestAvisosFlujo(unittest.TestCase):
         reglas[0].condition = ZoneIs("Zona 2", "Chica")
         reglas[1].condition = ZoneIs("Zona 1", "baseline")
         self.assertEqual(flow_warnings(f, info), [])
+
+
+class TestAvisoVentana(unittest.TestCase):
+    def test_recortes_con_otra_ventana(self):
+        from core.rules import Flow, TemplateRef, flow_warnings
+        f = Flow.from_dict({"nombre": "t"})
+        f.templates["P"] = TemplateRef("p.png", ref_size=(1360, 768))
+        info = {"P": ((10, 10), (1360, 768))}.get
+        self.assertEqual(flow_warnings(f, info, current_size=(1360, 768)), [])
+        avisos = flow_warnings(f, info, current_size=(1360, 697))
+        self.assertEqual(len(avisos), 1)
+        self.assertIn("1360×697", avisos[0])

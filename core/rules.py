@@ -725,11 +725,15 @@ TemplateInfo = Callable[[str], "tuple[tuple[int, int], tuple[int, int] | None] |
 
 
 def flow_warnings(flow: Flow, template_info: TemplateInfo,
-                  window_size: tuple[int, int] | None = None) -> list[str]:
+                  window_size: tuple[int, int] | None = None,
+                  current_size: tuple[int, int] | None = None) -> list[str]:
     """Avisos que NO impiden el Play pero casi seguro son un error de configuración.
 
     - Dos reglas del mismo proceso con la misma condición (la 2.ª nunca hace lo esperado).
     - Una plantilla más grande que la zona donde se busca (nunca coincidirá).
+
+    - Plantillas recortadas con una ventana de otro tamaño que la actual
+      (``current_size``): las zonas y plantillas quedan desplazadas/deformadas.
 
     ``template_info(nombre)`` -> ((ancho, alto), ref_size) de la imagen recortada.
     """
@@ -746,6 +750,17 @@ def flow_warnings(flow: Flow, template_info: TemplateInfo,
                                   f"condición ({texto}): revisa la zona y el estado de cada una")
                 else:
                     vistas[texto] = regla.name
+
+    if current_size:
+        distintas = sorted({info[1] for t in flow.templates
+                            if (info := template_info(t)) and info[1]
+                            and (abs(info[1][0] - current_size[0]) > 0.02 * current_size[0]
+                                 or abs(info[1][1] - current_size[1]) > 0.02 * current_size[1])})
+        for ref in distintas:
+            avisos.append(f"Hay plantillas recortadas con una ventana de {ref[0]}×{ref[1]} px, pero la "
+                          f"ventana objetivo ahora mide {current_size[0]}×{current_size[1]} px: zonas y "
+                          f"plantillas quedarán desplazadas. Elige la ventana en Ajustes ANTES de recortar "
+                          f"y vuelve a recortarlas")
 
     zonas = {z.name: z for z in flow.zones}
     for zona, objetivos in flow.requirements().items():

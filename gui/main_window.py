@@ -706,7 +706,10 @@ class MainWindow(ctk.CTk):
             messagebox.showerror("No se puede iniciar", "\n".join(errores), parent=self)
             return
         try:
-            for aviso in flow_warnings(self.task.flow, self.engine.templates.info):
+            titulo = self.task.settings.window_title
+            actual = WindowLocator(titulo).locate() if titulo else primary_screen()
+            for aviso in flow_warnings(self.task.flow, self.engine.templates.info,
+                                       current_size=actual.size if actual else None):
                 self._log(f"⚠ {aviso}")
         except Exception:  # noqa: BLE001 - un aviso nunca debe impedir el Play
             log.exception("No se pudieron calcular los avisos del flujo")
