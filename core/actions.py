@@ -97,12 +97,19 @@ def resolve_point(action: Mapping[str, Any], ctx: ActionContext) -> tuple[int, i
     plantilla = action.get("plantilla")
 
     if plantilla:
-        if not zona:
-            raise ActionError("Un click sobre 'plantilla' necesita 'zona'")
-        obs = ctx.observations.get(zona)
-        loc = obs.locations.get(plantilla) if obs else None
-        if loc is None:
-            raise ActionError(f"Sin coincidencia de {plantilla!r} en {zona!r}")
+        if zona:
+            obs = ctx.observations.get(zona)
+            loc = obs.locations.get(plantilla) if obs else None
+            if loc is None:
+                raise ActionError(f"Sin coincidencia de {plantilla!r} en {zona!r}")
+        else:
+            # Sin zona: usar la zona donde la plantilla se detectó en este ciclo.
+            candidatas = [o for o in ctx.observations.values() if plantilla in o.locations]
+            mejor = max(candidatas, key=lambda o: o.scores.get(plantilla, -1.0), default=None)
+            loc = mejor.locations[plantilla] if mejor else None
+            if loc is None:
+                raise ActionError(f"No se ve {plantilla!r} en ninguna zona ahora mismo "
+                                  "(¿alguna regla la usa en su condición?)")
         x, y, w, h = loc
         return x + w // 2, y + h // 2
 

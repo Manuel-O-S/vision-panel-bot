@@ -718,6 +718,8 @@ class MainWindow(ctk.CTk):
         self.engine.panic()
 
     def _panic_from_hotkey(self) -> None:
+        if not self.engine.is_alive():
+            return  # bot parado (p. ej. Esc para cancelar un recorte): nada que detener
         self.engine.panic()          # inmediato, desde el hilo de pynput
         self._ui_queue.put("panic")  # aviso para la GUI
 

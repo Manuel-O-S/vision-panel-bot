@@ -93,6 +93,22 @@ class TestAutoclick(unittest.TestCase):
             r({"tipo": "mantener", "boton": "lateral"}, ctx())
 
 
+class TestPlantillaSinZona(unittest.TestCase):
+    def test_usa_la_zona_con_mejor_coincidencia(self):
+        from core.rules import ZoneObservation
+        obs = {"Zona 1": ZoneObservation("Zona 1", scores={"P": 0.30}, locations={"P": (0, 0, 10, 10)}),
+               "Zona 2": ZoneObservation("Zona 2", scores={"P": 0.95}, locations={"P": (500, 400, 20, 10)})}
+        c = ActionContext(window=Rect(0, 0, 800, 600), zones={}, observations=obs,
+                          stop_event=threading.Event(), rule="R")
+        m = FakeMouse()
+        FakeRunner(m)({"tipo": "mantener", "plantilla": "P", "min": 0, "max": 0}, c)
+        self.assertEqual(m.pos, (510, 405))
+
+    def test_error_claro_si_no_se_ve(self):
+        with self.assertRaises(ActionError):
+            FakeRunner(FakeMouse())({"tipo": "autoclick", "plantilla": "P"}, ctx())
+
+
 class TestMenuEditor(unittest.TestCase):
     def test_claves_del_menu(self):
         from gui.block_editor import ACTION_DEFAULTS, ACTION_LABELS, action_menu_key
