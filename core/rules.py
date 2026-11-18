@@ -33,7 +33,7 @@ from __future__ import annotations
 import re
 from abc import ABC, abstractmethod
 from dataclasses import replace as dc_replace
-from collections.abc import Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
@@ -44,7 +44,7 @@ __all__ = [
     "BASELINE", "ZoneObservation", "Condition", "ZoneIs", "And", "Or", "Not",
     "parse_condition", "parse_expression", "condition_to_text", "rename_in_condition",
     "ConditionSyntaxError",
-    "Trigger", "Rule", "Process", "Loop", "TemplateRef", "Flow",
+    "Trigger", "Rule", "Process", "Loop", "TemplateRef", "Flow", "flow_warnings",
 ]
 
 BASELINE = "baseline"
@@ -719,3 +719,50 @@ class Flow:
             loops=[Loop.from_dict(l) for l in data.get("loops", [])],
             actions={str(k): [dict(a) for a in v] for k, v in data.get("acciones", {}).items()},
         )
+
+
+TemplateInfo = Callable[[str], "tuple[tuple[int, int], tuple[int, int] | None] | None"]
+
+
+def flow_warnings(flow: Flow, template_info: TemplateInfo,
+                  window_size: tuple[int, int] | None = None) -> list[str]:
+    """Avisos que NO impiden el Play pero casi seguro son un error de configuración.
+
+    - Dos reglas del mismo proceso con la misma condición (la 2.ª nunca hace lo esperado).
+    - Una plantilla más grande que la zona donde se busca (nunca coincidirá).
+
+    ``template_info(nombre)`` -> ((ancho, alto), ref_size) de la imagen recortada.
+    """
+    avisos: list[str] = []
+    for loop in flow.loops:
+        for proc in loop.processes:
+            vistas: dict[str, str] = {}
+            for regla in proc.rules:
+                if not regla.enabled:
+                    continue
+                texto = condition_to_text(regla.condition)
+                if texto in vistas:
+                    avisos.append(f"Las reglas {vistas[texto]!r} y {regla.name!r} tienen la misma "
+                                  f"condición ({texto}): revisa la zona y el estado de cada una")
+                else:
+                    vistas[texto] = regla.name
+
+    zonas = {z.name: z for z in flow.zones}
+    for zona, objetivos in flow.requirements().items():
+        z = zonas.get(zona)
+        if z is None:
+            continue
+        for t in sorted(objetivos - {BASELINE}):
+            info = template_info(t)
+            if info is None:
+                continue
+            (tw, th), ref = info
+            ref = ref or window_size
+            if ref is None:
+                continue
+            zw, zh = z.w * ref[0], z.h * ref[1]
+            if tw > zw + 1 or th > zh + 1:
+                avisos.append(f"La plantilla {t!r} ({tw}×{th} px) es más grande que {zona!r} "
+                              f"({zw:.0f}×{zh:.0f} px): nunca coincidirá. Recorta la zona más amplia "
+                              f"o la plantilla más ajustada")
+    return avisos

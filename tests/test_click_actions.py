@@ -119,3 +119,26 @@ class TestMenuEditor(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestAvisosFlujo(unittest.TestCase):
+    def test_condicion_repetida_y_plantilla_grande(self):
+        from core.geometry import RelativeZone
+        from core.rules import Flow, Rule, TemplateRef, ZoneIs, flow_warnings
+        f = Flow.from_dict({"nombre": "t", "loops": [{"nombre": "L", "procesos": [{"nombre": "P", "reglas": []}]}]})
+        f.zones += [RelativeZone("Zona 1", 0, 0, 0.1, 0.1), RelativeZone("Zona 2", 0.5, 0.5, 0.4, 0.4)]
+        f.templates.update({"Grande": TemplateRef("g.png", ref_size=(1000, 1000)),
+                            "Chica": TemplateRef("c.png", ref_size=(1000, 1000))})
+        reglas = f.loops[0].processes[0].rules
+        reglas += [Rule("A", ZoneIs("Zona 1", "Grande")), Rule("B", ZoneIs("Zona 1", "Grande")),
+                   Rule("C", ZoneIs("Zona 2", "Chica"))]
+        info = {"Grande": ((300, 50), (1000, 1000)), "Chica": ((50, 50), (1000, 1000))}.get
+        avisos = flow_warnings(f, info)
+        self.assertEqual(len(avisos), 2, avisos)
+        self.assertIn("misma condición", avisos[0])
+        self.assertIn("'Grande'", avisos[1])
+        reglas[1].condition = ZoneIs("Zona 2", "Chica")
+        reglas[2].enabled = False
+        reglas[0].condition = ZoneIs("Zona 2", "Chica")
+        reglas[1].condition = ZoneIs("Zona 1", "baseline")
+        self.assertEqual(flow_warnings(f, info), [])

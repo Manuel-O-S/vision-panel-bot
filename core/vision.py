@@ -414,6 +414,15 @@ class TemplateLibrary:
         with self._lock:
             return list(self._templates)
 
+    def info(self, name: str) -> tuple[tuple[int, int], tuple[int, int] | None] | None:
+        """((ancho, alto) de la imagen, ref_size) o ``None`` si no existe."""
+        with self._lock:
+            tpl = self._templates.get(name)
+            if tpl is None:
+                return None
+            h, w = tpl.image.shape[:2]
+            return (w, h), tpl.ref_size
+
     def _drop_cache(self, name: str) -> None:
         for key in [k for k in self._cache if k[0] == name]:
             del self._cache[key]

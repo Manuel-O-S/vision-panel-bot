@@ -36,7 +36,7 @@ import customtkinter as ctk
 from actions.macro_recorder import MacroError, MacroRecorder
 from core.engine import Engine, EngineEvent, EngineState, EventType
 from core.geometry import Rect, RelativeZone
-from core.rules import BASELINE, TemplateRef
+from core.rules import BASELINE, TemplateRef, flow_warnings
 from core.vision import TemplateLibrary, WindowLocator, list_windows, primary_screen, read_image
 from gui.block_editor import ActionsEditor, FlowEditor
 from gui.snipping_tool import Snip, SnippingTool, bgr_to_photo
@@ -705,6 +705,11 @@ class MainWindow(ctk.CTk):
         if errores:
             messagebox.showerror("No se puede iniciar", "\n".join(errores), parent=self)
             return
+        try:
+            for aviso in flow_warnings(self.task.flow, self.engine.templates.info):
+                self._log(f"⚠ {aviso}")
+        except Exception:  # noqa: BLE001 - un aviso nunca debe impedir el Play
+            log.exception("No se pudieron calcular los avisos del flujo")
         self.engine.config = self.task.settings.apply_to(self.engine.config)
         self.engine.load_flow(self.task.copy_flow())
         self.engine.set_delta_threshold(self.task.settings.delta_threshold)
